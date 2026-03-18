@@ -35,15 +35,17 @@ class RBA_Admin {
 
         if ( $tf_slug ) {
             // ── Attach vào đúng menu Tourfic ────────────────────────────────
-            add_submenu_page( $tf_slug, 'Resort Dashboard', 'Resort Dashboard', 'manage_options', self::MENU_SLUG,    [ $this, 'render_dashboard' ] );
-            add_submenu_page( $tf_slug, 'Availability',     'Availability',     'manage_options', 'rba-availability', [ $this, 'render_availability' ] );
-            add_submenu_page( $tf_slug, 'OTA Sync',         'OTA Sync',         'manage_options', 'rba-ota-sync',     [ $this, 'render_ota_sync_page' ] );
+            add_submenu_page( $tf_slug, 'Resort Dashboard',      'Resort Dashboard', 'manage_options', self::MENU_SLUG,           [ $this, 'render_dashboard' ] );
+            add_submenu_page( $tf_slug, 'Availability',          'Availability',     'manage_options', 'rba-availability',        [ $this, 'render_availability' ] );
+            add_submenu_page( $tf_slug, 'OTA Sync',              'OTA Sync',         'manage_options', 'rba-ota-sync',            [ $this, 'render_ota_sync_page' ] );
+            add_submenu_page( $tf_slug, 'GitHub Update Settings','Update Settings',  'manage_options', 'rba-update-settings',     [ $this, 'render_update_settings_page' ] );
         } else {
             // ── Fallback: top-level menu riêng ──────────────────────────────
             add_menu_page( 'Resort Booking', 'Resort Booking', 'manage_options', self::MENU_SLUG, [ $this, 'render_dashboard' ], 'dashicons-calendar-alt', 26 );
-            add_submenu_page( self::MENU_SLUG, 'Resort Dashboard', 'Dashboard',    'manage_options', self::MENU_SLUG,    [ $this, 'render_dashboard' ] );
-            add_submenu_page( self::MENU_SLUG, 'Availability',     'Availability', 'manage_options', 'rba-availability', [ $this, 'render_availability' ] );
-            add_submenu_page( self::MENU_SLUG, 'OTA Sync',         'OTA Sync',     'manage_options', 'rba-ota-sync',     [ $this, 'render_ota_sync_page' ] );
+            add_submenu_page( self::MENU_SLUG, 'Resort Dashboard',      'Dashboard',      'manage_options', self::MENU_SLUG,       [ $this, 'render_dashboard' ] );
+            add_submenu_page( self::MENU_SLUG, 'Availability',          'Availability',   'manage_options', 'rba-availability',   [ $this, 'render_availability' ] );
+            add_submenu_page( self::MENU_SLUG, 'OTA Sync',              'OTA Sync',       'manage_options', 'rba-ota-sync',       [ $this, 'render_ota_sync_page' ] );
+            add_submenu_page( self::MENU_SLUG, 'GitHub Update Settings','Update Settings','manage_options', 'rba-update-settings',[ $this, 'render_update_settings_page' ] );
         }
     }
 
@@ -625,11 +627,11 @@ class RBA_Admin {
                         <td>
                             <input type="password" id="rba-gh-token" value="<?php echo esc_attr( $github_token ); ?>"
                                    class="regular-text" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
-                            <p class="description">
+                            <!-- <p class="description">
                                 Bắt buộc với <strong>private repo</strong>. Không cần với public repo.<br>
                                 Tạo tại: GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)<br>
                                 Scope cần thiết: <code>repo</code> (đọc releases và assets)
-                            </p>
+                            </p> -->
                         </td>
                     </tr>
                 </table>
@@ -648,7 +650,7 @@ class RBA_Admin {
 
                 <hr style="margin:24px 0">
 
-                <h3 style="margin-top:0">Hướng dẫn thiết lập GitHub Release</h3>
+                <!-- <h3 style="margin-top:0">Hướng dẫn thiết lập GitHub Release</h3>
                 <div style="background:#f9f9f9;border:1px solid #e0e0e0;border-radius:6px;padding:16px;font-size:13px;line-height:1.8">
                     <strong>1. Tạo Release trên GitHub:</strong><br>
                     &nbsp;&nbsp;→ Repo → Releases → Draft a new release → Create new tag: <code>v1.4.1</code><br>
@@ -662,7 +664,7 @@ class RBA_Admin {
                     <strong>3. Đặt tên .zip đúng format:</strong><br>
                     &nbsp;&nbsp;Ưu tiên: <code>resort-booking-addon-v1.4.1.zip</code><br>
                     &nbsp;&nbsp;Fallback: <code>resort-booking-addon-1.4.1.zip</code> hoặc <code>resort-booking-addon.zip</code>
-                </div>
+                </div> -->
             </div>
         </div>
 
