@@ -607,20 +607,20 @@ class RBA_Admin {
             <div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:24px;margin-top:0">
 
                 <!-- STATUS BAR -->
-                <div style="background:#f0f6fc;border:1px solid #0969da;border-radius:6px;padding:12px 16px;margin-bottom:20px;font-size:13px;display:flex;gap:20px;flex-wrap:wrap">
-                    <span><strong>Phiên bản cài:</strong> <?php echo esc_html( RBA_VERSION ); ?></span>
-                    <span><strong>Plugin slug:</strong> <code><?php echo esc_html( $debug['plugin_slug'] ?? '?' ); ?></code></span>
+                <!-- <div style="background:#f0f6fc;border:1px solid #0969da;border-radius:6px;padding:12px 16px;margin-bottom:20px;font-size:13px;display:flex;gap:20px;flex-wrap:wrap">
+                    <span><strong>Phiên bản cài:</strong> <?php //echo esc_html( RBA_VERSION ); ?></span>
+                    <span><strong>Plugin slug:</strong> <code><?php //echo esc_html( $debug['plugin_slug'] ?? '?' ); ?></code></span>
                     <span><strong>Repo:</strong>
-                        <?php if ( $github_user && $github_repo ) : ?>
-                            <a href="https://github.com/<?php echo esc_attr( "$github_user/$github_repo" ); ?>" target="_blank">
-                                <?php echo esc_html( "$github_user/$github_repo" ); ?>
+                        <?php //if ( $github_user && $github_repo ) : ?>
+                            <a href="https://github.com/<?php //echo esc_attr( "$github_user/$github_repo" ); ?>" target="_blank">
+                                <?php //echo esc_html( "$github_user/$github_repo" ); ?>
                             </a>
-                        <?php else : ?>
+                        <?php //else : ?>
                             <span style="color:#e65100">⚠ Chưa điền</span>
-                        <?php endif; ?>
+                        <?php //endif; ?>
                     </span>
-                    <span><strong>Cache:</strong> <?php echo esc_html( $debug['cache_status'] ?? '?' ); ?></span>
-                </div>
+                    <span><strong>Cache:</strong> <?php //echo esc_html( $debug['cache_status'] ?? '?' ); ?></span>
+                </div> -->
 
                 <!-- FORM -->
                 <table class="form-table" style="margin:0">
