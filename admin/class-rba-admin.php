@@ -571,7 +571,6 @@ class RBA_Admin {
         </script>
         <?php
     }
-}
 
     // ─────────────────────────────────────────────────────────────────────────
     // GITHUB UPDATE SETTINGS
@@ -718,5 +717,7 @@ class RBA_Admin {
 
         wp_send_json_success();
     }
+
+} // end class RBA_Admin
 
 new RBA_Admin();
