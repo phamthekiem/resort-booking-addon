@@ -1,0 +1,51 @@
+# GitHub Actions: Tự động build và publish release khi push tag vX.Y.Z
+# Cách dùng: git tag v1.4.2 && git push origin v1.4.2
+name: Build & Release Plugin
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'   # Match: v1.4.1, v2.0.0, v1.10.5...
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Cần để tạo release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        # GITHUB_REF_NAME = "v1.4.1" → VERSION = "1.4.1"
+
+      - name: Update plugin header version
+        run: |
+          sed -i "s/^ \* Version:.*/ * Version:     ${{ steps.version.outputs.VERSION }}/" resort-booking-addon.php
+          sed -i "s/define( 'RBA_VERSION', '.*' );/define( 'RBA_VERSION', '${{ steps.version.outputs.VERSION }}' );/" resort-booking-addon.php
+
+      - name: Create release zip (exclude dev files)
+        run: |
+          zip -r resort-booking-addon-v${{ steps.version.outputs.VERSION }}.zip . \
+            --exclude "*.git*" \
+            --exclude ".github/*" \
+            --exclude "*.DS_Store" \
+            --exclude "*__MACOSX*" \
+            --exclude "node_modules/*" \
+            --exclude "*.md" \
+            --exclude "CHANGELOG.md" \
+            --exclude "*.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ steps.version.outputs.VERSION }}"
+          files: resort-booking-addon-v${{ steps.version.outputs.VERSION }}.zip
+          body_path: CHANGELOG.md   # Đọc changelog từ file
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

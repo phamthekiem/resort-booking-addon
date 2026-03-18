@@ -1,0 +1,21 @@
+# Build artifacts
+*.zip
+*.tar.gz
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Composer
+vendor/
+node_modules/
+
+# Local dev
+.env
+*.local

@@ -1,0 +1,234 @@
+/* ============================================================
+   Resort Booking Addon — Frontend Styles
+   ============================================================ */
+
+/* ── Search Form ─────────────────────────────────────────── */
+.rba-search-form {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 4px 24px rgba(0,0,0,.08);
+    padding: 28px 32px;
+    margin: 24px 0;
+    font-family: inherit;
+}
+
+.rba-search-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #f0f0f0;
+    padding-bottom: 12px;
+}
+.rba-search-tabs .tab {
+    background: none;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 8px 20px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    color: #666;
+    transition: all .2s;
+}
+.rba-search-tabs .tab.active,
+.rba-search-tabs .tab:hover {
+    background: #1a6b3c;
+    border-color: #1a6b3c;
+    color: #fff;
+}
+
+.rba-tab-content { display: none; }
+.rba-tab-content.active { display: block; }
+
+.rba-form-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    align-items: flex-end;
+}
+
+.rba-field {
+    flex: 1;
+    min-width: 140px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.rba-field.small { flex: 0 0 100px; }
+
+.rba-field label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+}
+
+.rba-field input,
+.rba-field select {
+    padding: 10px 14px;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 14px;
+    width: 100%;
+    transition: border-color .2s;
+}
+.rba-field input:focus,
+.rba-field select:focus {
+    outline: none;
+    border-color: #1a6b3c;
+}
+
+.rba-form-actions { margin-top: 8px; }
+
+.rba-btn-search {
+    background: #1a6b3c;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 32px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background .2s, transform .1s;
+}
+.rba-btn-search:hover { background: #145230; transform: translateY(-1px); }
+.rba-btn-search:disabled { background: #999; transform: none; }
+
+/* ── Search Results ──────────────────────────────────────── */
+.rba-search-results {
+    margin-top: 28px;
+    border-top: 2px solid #f0f0f0;
+    padding-top: 20px;
+}
+
+.rba-results-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    font-size: 14px;
+    color: #666;
+}
+.rba-results-count { font-weight: 700; color: #1a6b3c; font-size: 16px; }
+
+.rba-results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+}
+
+/* ── Room / Result Cards ─────────────────────────────────── */
+.rba-result-card,
+.rba-room-card {
+    background: #fff;
+    border: 1px solid #e8e8e8;
+    border-radius: 12px;
+    overflow: hidden;
+    transition: box-shadow .2s, transform .2s;
+}
+.rba-result-card:hover,
+.rba-room-card:hover {
+    box-shadow: 0 8px 24px rgba(0,0,0,.12);
+    transform: translateY(-2px);
+}
+
+.rba-result-card img,
+.rba-room-thumb img {
+    width: 100%;
+    height: 180px;
+    object-fit: cover;
+    display: block;
+}
+
+.rba-result-info,
+.rba-room-info { padding: 16px; }
+
+.rba-result-info h3,
+.rba-room-info h3 {
+    margin: 0 0 8px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #222;
+}
+
+.rba-room-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.rba-room-meta span {
+    font-size: 12px;
+    background: #f5f5f5;
+    border-radius: 4px;
+    padding: 3px 8px;
+    color: #555;
+}
+
+.rba-price { margin-bottom: 12px; }
+.rba-price strong,
+.rba-room-price .price-per-night { font-size: 20px; color: #1a6b3c; }
+.rba-price small,
+.rba-room-price .price-total { display: block; font-size: 12px; color: #888; margin-top: 2px; }
+
+.rba-btn-book {
+    display: block;
+    text-align: center;
+    background: #1a6b3c;
+    color: #fff !important;
+    padding: 10px 16px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 14px;
+    transition: background .2s;
+}
+.rba-btn-book:hover { background: #145230; }
+
+.rba-no-rooms,
+.rba-no-results { text-align: center; padding: 32px; color: #666; }
+
+/* ── Tour Slots ──────────────────────────────────────────── */
+.rba-tour-slots h4 { margin-bottom: 16px; }
+.rba-slot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border: 1px solid #e8e8e8;
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+.rba-slot.full { opacity: .6; background: #f9f9f9; }
+.rba-slot .slot-time { font-weight: 700; font-size: 16px; }
+.rba-select-slot {
+    background: #1a6b3c !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 6px 16px !important;
+    cursor: pointer !important;
+}
+
+/* ── Booking Guard: Live availability badge ──────────────── */
+.rba-availability-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: 600;
+}
+.rba-availability-badge.available { background: #e8f5e9; color: #2e7d32; }
+.rba-availability-badge.limited   { background: #fff3e0; color: #e65100; }
+.rba-availability-badge.full      { background: #fce4ec; color: #c62828; }
+
+/* ── Responsive ──────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .rba-search-form { padding: 20px 16px; }
+    .rba-form-row { flex-direction: column; gap: 12px; }
+    .rba-field.small { flex: 1; }
+    .rba-results-grid { grid-template-columns: 1fr; }
+}
