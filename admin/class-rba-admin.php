@@ -582,9 +582,21 @@ class RBA_Admin {
         $github_user  = get_option( 'rba_updater_github_user', '' );
         $github_repo  = get_option( 'rba_updater_github_repo', 'resort-booking-addon' );
         $github_token = get_option( 'rba_updater_github_token', '' );
-        $current_ver  = RBA_VERSION;
+        $logs         = array_reverse( get_option( 'rba_updater_logs', [] ) );
+        $nonce_save   = wp_create_nonce( 'rba_save_github_config' );
+        $nonce_check  = wp_create_nonce( 'rba_check_update_now' );
+
+        // Lấy debug info từ updater nếu đã khởi tạo
+        $debug = [];
+        if ( class_exists( 'RBA_Updater' ) ) {
+            $updater = new RBA_Updater(
+                RBA_PATH . 'resort-booking-addon.php',
+                $github_user, $github_repo, RBA_VERSION, $github_token
+            );
+            $debug = $updater->get_debug_info();
+        }
         ?>
-        <div class="wrap" style="max-width:720px">
+        <div class="wrap" style="max-width:780px">
             <h1>
                 <span class="dashicons dashicons-update" style="font-size:26px;vertical-align:middle;margin-right:8px;color:#1a6b3c"></span>
                 GitHub Update Settings
@@ -592,26 +604,31 @@ class RBA_Admin {
 
             <?php $this->render_tab_nav( 'update' ); ?>
 
-            <div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:24px">
-                <div style="background:#f0f6fc;border:1px solid #0969da;border-radius:6px;padding:14px;margin-bottom:20px;font-size:13px">
-                    <strong>Phiên bản đang cài:</strong> <?php echo esc_html( $current_ver ); ?> &nbsp;|&nbsp;
-                    <strong>Repo:</strong>
-                    <?php if ( $github_user && $github_repo ) : ?>
-                        <a href="https://github.com/<?php echo esc_attr( $github_user . '/' . $github_repo ); ?>" target="_blank">
-                            <?php echo esc_html( $github_user . '/' . $github_repo ); ?>
-                        </a>
-                    <?php else : ?>
-                        <em style="color:#888">Chưa cấu hình</em>
-                    <?php endif; ?>
+            <div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:24px;margin-top:0">
+
+                <!-- STATUS BAR -->
+                <div style="background:#f0f6fc;border:1px solid #0969da;border-radius:6px;padding:12px 16px;margin-bottom:20px;font-size:13px;display:flex;gap:20px;flex-wrap:wrap">
+                    <span><strong>Phiên bản cài:</strong> <?php echo esc_html( RBA_VERSION ); ?></span>
+                    <span><strong>Plugin slug:</strong> <code><?php echo esc_html( $debug['plugin_slug'] ?? '?' ); ?></code></span>
+                    <span><strong>Repo:</strong>
+                        <?php if ( $github_user && $github_repo ) : ?>
+                            <a href="https://github.com/<?php echo esc_attr( "$github_user/$github_repo" ); ?>" target="_blank">
+                                <?php echo esc_html( "$github_user/$github_repo" ); ?>
+                            </a>
+                        <?php else : ?>
+                            <span style="color:#e65100">⚠ Chưa điền</span>
+                        <?php endif; ?>
+                    </span>
+                    <span><strong>Cache:</strong> <?php echo esc_html( $debug['cache_status'] ?? '?' ); ?></span>
                 </div>
 
+                <!-- FORM -->
                 <table class="form-table" style="margin:0">
                     <tr>
-                        <th style="width:160px"><label>GitHub Username / Org</label></th>
+                        <th style="width:160px"><label>GitHub Username</label></th>
                         <td>
                             <input type="text" id="rba-gh-user" value="<?php echo esc_attr( $github_user ); ?>"
                                    class="regular-text" placeholder="your-github-username">
-                            <p class="description">Username hoặc Organization name trên GitHub</p>
                         </td>
                     </tr>
                     <tr>
@@ -619,86 +636,126 @@ class RBA_Admin {
                         <td>
                             <input type="text" id="rba-gh-repo" value="<?php echo esc_attr( $github_repo ); ?>"
                                    class="regular-text" placeholder="resort-booking-addon">
-                            <p class="description">Tên repo chứa plugin (không bao gồm username)</p>
                         </td>
                     </tr>
                     <tr>
                         <th><label>Personal Access Token</label></th>
                         <td>
                             <input type="password" id="rba-gh-token" value="<?php echo esc_attr( $github_token ); ?>"
-                                   class="regular-text" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
-                            <!-- <p class="description">
-                                Bắt buộc với <strong>private repo</strong>. Không cần với public repo.<br>
-                                Tạo tại: GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)<br>
-                                Scope cần thiết: <code>repo</code> (đọc releases và assets)
-                            </p> -->
+                                   class="regular-text" placeholder="ghp_xxxx (để trống nếu public repo)">
+                            <p class="description">Cần thiết với <strong>private repo</strong>. Scope cần: <code>repo</code></p>
                         </td>
                     </tr>
                 </table>
 
-                <div style="margin-top:20px;display:flex;gap:10px;align-items:center">
+                <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
                     <button class="button button-primary" id="rba-save-github-config"
-                            data-nonce="<?php echo esc_attr( wp_create_nonce('rba_save_github_config') ); ?>">
+                            data-nonce="<?php echo esc_attr( $nonce_save ); ?>">
                         Lưu cài đặt
                     </button>
-                    <button class="button" id="rba-test-github-api"
-                            data-nonce="<?php echo esc_attr( wp_create_nonce('rba_check_update_now') ); ?>">
-                        Test & Check for Updates
+                    <button class="button button-primary" id="rba-test-github-api"
+                            data-nonce="<?php echo esc_attr( $nonce_check ); ?>">
+                        🔄 Kiểm tra Update ngay
                     </button>
-                    <span id="rba-github-msg" style="font-size:13px"></span>
+                    <span id="rba-github-msg" style="font-size:13px;font-weight:600"></span>
                 </div>
 
+                <!-- DEBUG PANEL -->
                 <hr style="margin:24px 0">
+                <details>
+                    <summary style="cursor:pointer;font-weight:600;font-size:13px">🔍 Debug Info (click để xem)</summary>
+                    <div style="background:#f5f5f5;border:1px solid #e0e0e0;border-radius:4px;padding:12px;margin-top:10px;font-family:monospace;font-size:12px;line-height:1.8">
+                        <?php foreach ( $debug as $k => $v ) : ?>
+                            <div><strong><?php echo esc_html( $k ); ?>:</strong>
+                                <?php echo esc_html( is_bool( $v ) ? ( $v ? 'true' : 'false' ) : (string) $v ); ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </details>
 
-                <!-- <h3 style="margin-top:0">Hướng dẫn thiết lập GitHub Release</h3>
-                <div style="background:#f9f9f9;border:1px solid #e0e0e0;border-radius:6px;padding:16px;font-size:13px;line-height:1.8">
-                    <strong>1. Tạo Release trên GitHub:</strong><br>
-                    &nbsp;&nbsp;→ Repo → Releases → Draft a new release → Create new tag: <code>v1.4.1</code><br>
-                    &nbsp;&nbsp;→ Upload file: <code>resort-booking-addon-v1.4.1.zip</code> (tên phải đúng format)<br>
-                    &nbsp;&nbsp;→ Viết changelog trong Release body (Markdown)<br>
-                    &nbsp;&nbsp;→ Publish release<br><br>
-                    <strong>2. WordPress tự động:</strong><br>
-                    &nbsp;&nbsp;→ Mỗi 12 giờ WordPress check update → plugin chen vào → so sánh version tag<br>
-                    &nbsp;&nbsp;→ Nếu tag mới hơn version đang cài → hiện nút "Update" trong Plugins page<br>
-                    &nbsp;&nbsp;→ Admin click Update → WordPress download .zip từ GitHub Release → cài đặt<br><br>
-                    <strong>3. Đặt tên .zip đúng format:</strong><br>
-                    &nbsp;&nbsp;Ưu tiên: <code>resort-booking-addon-v1.4.1.zip</code><br>
-                    &nbsp;&nbsp;Fallback: <code>resort-booking-addon-1.4.1.zip</code> hoặc <code>resort-booking-addon.zip</code>
-                </div> -->
+                <!-- LOGS -->
+                <?php if ( $logs ) : ?>
+                <hr style="margin:20px 0">
+                <h4 style="margin:0 0 10px">Activity Logs</h4>
+                <div style="background:#1e1e1e;color:#d4d4d4;font-family:monospace;font-size:11px;line-height:1.7;padding:12px;border-radius:4px;max-height:200px;overflow-y:auto">
+                    <?php foreach ( $logs as $line ) : ?>
+                        <div style="color:<?php echo str_contains($line,'WARN') || str_contains($line,'error') ? '#f48771' : ( str_contains($line,'Update available') ? '#89d185' : '#d4d4d4' ); ?>">
+                            <?php echo esc_html( $line ); ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+                <p style="margin:6px 0 0"><button class="button button-small" id="rba-clear-update-logs">Xóa logs</button></p>
+                <?php endif; ?>
+
+                <!-- HƯỚNG DẪN -->
+                <!-- <hr style="margin:24px 0">
+                <h3 style="margin-top:0">Checklist khi update không hiển thị</h3>
+                <ol style="font-size:13px;line-height:2">
+                    <li>GitHub repo đã có <strong>Release</strong> (không phải chỉ push code) — vào repo → Releases → xem có release nào chưa</li>
+                    <li>Tag release format đúng: <code>v1.4.2</code> (có chữ "v" ở đầu)</li>
+                    <li>Version trong tag (<code>1.4.2</code>) phải <strong>lớn hơn</strong> version đang cài (<code><?php echo esc_html( RBA_VERSION ); ?></code>)</li>
+                    <li>File <code>resort-booking-addon.php</code> trong repo có <code>Version: 1.4.2</code> khớp với tag</li>
+                    <li>Release có đính kèm file <code>.zip</code> — GitHub Actions phải đã chạy xong</li>
+                    <li>Click <strong>"Kiểm tra Update ngay"</strong> ở trên thay vì chờ WordPress tự check (12 giờ/lần)</li>
+                    <li>Xem <strong>Debug Info</strong> ở trên — nếu <code>api_url</code> sai hoặc <code>github_user</code> rỗng thì điền lại</li>
+                </ol> -->
             </div>
         </div>
 
         <script>
         (function($){
             $('#rba-save-github-config').on('click', function(){
+                const $b = $(this).prop('disabled', true).text('Đang lưu...');
                 const $msg = $('#rba-github-msg');
                 $.post(ajaxurl, {
                     action: 'rba_save_github_config',
                     nonce:  $(this).data('nonce'),
-                    user:   $('#rba-gh-user').val(),
-                    repo:   $('#rba-gh-repo').val(),
-                    token:  $('#rba-gh-token').val(),
+                    user:   $('#rba-gh-user').val().trim(),
+                    repo:   $('#rba-gh-repo').val().trim(),
+                    token:  $('#rba-gh-token').val().trim(),
                 }, function(r){
-                    $msg.html( r.success
-                        ? '<span style="color:#2e7d32">✔ Đã lưu</span>'
-                        : '<span style="color:#c62828">✘ Lỗi</span>' );
+                    $b.prop('disabled', false).text('Lưu cài đặt');
+                    if (r.success) {
+                        $msg.html('<span style="color:#2e7d32">✔ Đã lưu — ' + r.data.github_url + '</span>');
+                        setTimeout(() => location.reload(), 1000);
+                    } else {
+                        $msg.html('<span style="color:#c62828">✘ ' + r.data + '</span>');
+                    }
                 });
             });
 
             $('#rba-test-github-api').on('click', function(){
+                const $b = $(this).prop('disabled', true).text('⏳ Đang kiểm tra...');
                 const $msg = $('#rba-github-msg');
-                $msg.text('Đang kiểm tra...');
-                $.post(ajaxurl, { action: 'rba_check_update_now', nonce: $(this).data('nonce') }, function(r){
-                    if ( r.success ) {
-                        if ( r.data.has_update ) {
-                            $msg.html('<span style="color:#e65100">⬆ Có bản mới: v' + r.data.version + ' — <a href="plugins.php">Xem trong Plugins</a></span>');
+                $.post(ajaxurl, {
+                    action: 'rba_check_update_now',
+                    nonce:  $(this).data('nonce'),
+                }, function(r){
+                    $b.prop('disabled', false).text('🔄 Kiểm tra Update ngay');
+                    if (r.success) {
+                        if (r.data.has_update) {
+                            $msg.html('<span style="color:#e65100;font-size:14px">⬆ Có bản mới: v' + r.data.version + ' — <a href="plugins.php">Vào Plugins để update</a></span>');
                         } else {
                             $msg.html('<span style="color:#2e7d32">✔ Đang dùng bản mới nhất (v' + r.data.current_version + ')</span>');
                         }
+                        // Reload để cập nhật debug panel và logs
+                        setTimeout(() => location.reload(), 1500);
                     } else {
-                        $msg.html('<span style="color:#c62828">✘ ' + (r.data || 'Không kết nối được GitHub API') + '</span>');
+                        // Hiện lỗi + debug info
+                        let errMsg = typeof r.data === 'object'
+                            ? 'Xem Debug Info bên dưới'
+                            : (r.data || 'Lỗi không xác định');
+                        $msg.html('<span style="color:#c62828">✘ ' + errMsg + '</span>');
+                        if (typeof r.data === 'object') {
+                            console.table(r.data);
+                        }
                     }
                 });
+            });
+
+            $('#rba-clear-update-logs').on('click', function(){
+                $.post(ajaxurl, { action: 'rba_clear_update_logs', nonce: '<?php echo esc_js( wp_create_nonce("rba_clear_update_logs") ); ?>' },
+                    () => location.reload() );
             });
         })(jQuery);
         </script>

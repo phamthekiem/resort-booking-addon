@@ -3,7 +3,7 @@
  * Plugin Name: Resort Booking Addon for Tourfic
  * Plugin URI:  
  * Description: Mở rộng Tourfic Free: Phòng, giá theo mùa, iCal OTA sync, chống double booking, tour nội khu, ACF integration, KiotViet Hotel bridge.
- * Version:     1.4.1
+ * Version:     1.4.2
  * Author:      KiemPT
  * Update URI:   
  * Text Domain: rba
@@ -22,7 +22,7 @@ if ( version_compare( PHP_VERSION, '8.0.0', '<' ) ) {
     return;
 }
 
-define( 'RBA_VERSION', '1.4.1' );
+define( 'RBA_VERSION', '1.4.2' );
 define( 'RBA_PATH',    plugin_dir_path( __FILE__ ) );
 define( 'RBA_URL',     plugin_dir_url( __FILE__ ) );
 define( 'RBA_DB_VER',  '1.1' );
@@ -93,6 +93,15 @@ add_action( 'plugins_loaded', function (): void {
     }
 
 }, 20 );
+
+// ─── Clear update logs AJAX ───────────────────────────────────────────────────
+add_action( 'wp_ajax_rba_clear_update_logs', function(): void {
+    check_ajax_referer( 'rba_clear_update_logs', 'nonce' );
+    if ( current_user_can( 'manage_options' ) ) {
+        delete_option( 'rba_updater_logs' );
+    }
+    wp_send_json_success();
+} );
 
 // ─── Hook Google Calendar sync vào cron iCal có sẵn (dùng chung, không tạo cron riêng) ─
 add_action( 'rba_ical_sync_cron', function (): void {
