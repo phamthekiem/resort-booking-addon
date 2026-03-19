@@ -3,7 +3,7 @@
  * Plugin Name: Resort Booking Addon for Tourfic
  * Plugin URI:  
  * Description: Mở rộng Tourfic Free: Phòng, giá theo mùa, iCal OTA sync, chống double booking, tour nội khu, ACF integration, KiotViet Hotel bridge.
- * Version:     1.4.2
+ * Version:     1.4.31
  * Author:      KiemPT
  * Update URI:   
  * Text Domain: rba
