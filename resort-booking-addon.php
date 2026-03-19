@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name: Resort Booking Addon for Tourfic
- * Plugin URI:  
- * Description: Mở rộng Tourfic Free: Phòng, giá theo mùa, iCal OTA sync, chống double booking, tour nội khu, ACF integration, KiotViet Hotel bridge.
+ * Plugin URI:  https://github.com/
+ * Description: Mở rộng Tourfic Free: 25 phòng, giá theo mùa, iCal OTA sync, chống double booking, tour nội khu, ACF integration, KiotViet Hotel bridge.
  * Version:     1.4.31
- * Author:      KiemPT
- * Update URI:   
+ * Author:      Your Name
+ * Update URI:   https://github.com/
  * Text Domain: rba
  * Requires at least: 6.0
  * Requires PHP: 8.0
@@ -22,7 +22,7 @@ if ( version_compare( PHP_VERSION, '8.0.0', '<' ) ) {
     return;
 }
 
-define( 'RBA_VERSION', '1.4.2' );
+define( 'RBA_VERSION', '1.4.31' );
 define( 'RBA_PATH',    plugin_dir_path( __FILE__ ) );
 define( 'RBA_URL',     plugin_dir_url( __FILE__ ) );
 define( 'RBA_DB_VER',  '1.1' );
