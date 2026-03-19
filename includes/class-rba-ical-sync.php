@@ -483,12 +483,12 @@ class RBA_iCal_Sync {
                     OUTBOUND — URL feed cho OTA subscribe
                 </h4>
                 <p style="margin:0 0 10px 0;font-size:13px;color:#333">
-                    Copy URL bên dưới, sau đó <strong>import vào từng OTA</strong>:<br>
+                    <!-- Copy URL bên dưới, sau đó <strong>import vào từng OTA</strong>:<br> -->
                     &bull; <strong>Booking.com:</strong> Extranet → Calendar → Sync → Import → Paste URL<br>
                     &bull; <strong>Airbnb:</strong> Calendar → Import/Export → Import → Paste URL<br>
                     &bull; <strong>Agoda YCS:</strong> Inventory → Calendar Sync → Import URL<br>
                     &bull; <strong>Trip.com:</strong> Property Management → Calendar → iCal Import<br>
-                    Feed này tổng hợp <strong>toàn bộ ngày đã book</strong> (website + tất cả OTA khác).
+                    <!-- Feed này tổng hợp <strong>toàn bộ ngày đã book</strong> (website + tất cả OTA khác). -->
                 </p>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                     <input type="text" value="<?php echo esc_attr( $feed_url ); ?>" readonly
@@ -509,7 +509,7 @@ class RBA_iCal_Sync {
                     INBOUND — Import iCal từ OTA (block ngày OTA đã giữ)
                 </h4>
                 <p style="margin:0 0 12px 0;font-size:13px;color:#333">
-                    Lấy URL iCal export từ từng OTA, paste vào đây. Plugin sẽ tự sync mỗi 15 phút.<br>
+                    <!-- Lấy URL iCal export từ từng OTA, paste vào đây. Plugin sẽ tự sync mỗi 15 phút.<br> -->
                     &bull; <strong>Booking.com:</strong> Extranet → Calendar → Sync → Export → Copy URL<br>
                     &bull; <strong>Airbnb:</strong> Calendar → Import/Export → Export → Copy URL<br>
                     &bull; <strong>Agoda:</strong> YCS → Inventory → Calendar Sync → Export URL
