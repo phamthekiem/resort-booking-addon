@@ -13,9 +13,16 @@ class RBA_Booking_Guard {
     public function __construct() {
         add_filter( 'woocommerce_add_to_cart_validation', [ $this, 'validate_and_lock' ], 10, 3 );
         add_action( 'woocommerce_cart_item_removed',      [ $this, 'release_lock_on_remove' ], 10, 2 );
-        // Idempotent: cả 2 hooks đều chạy, nhưng chỉ xử lý 1 lần nhờ order meta flag
+
+        // ── QUAN TRỌNG: persist cart item meta vào order item meta ──────────
+        // Không có hook này → tf_room_id, tf_check_in, tf_check_out KHÔNG được
+        // lưu vào order → PMS không đọc được booking data
+        add_action( 'woocommerce_checkout_create_order_line_item',
+            [ $this, 'persist_booking_meta_to_order_item' ], 10, 4 );
+
         add_action( 'woocommerce_payment_complete',        [ $this, 'confirm_booking' ] );
         add_action( 'woocommerce_order_status_processing', [ $this, 'confirm_booking' ] );
+        add_action( 'woocommerce_order_status_on-hold',    [ $this, 'hold_booking' ] );
         add_action( 'woocommerce_order_status_cancelled',  [ $this, 'release_booking' ] );
         add_action( 'woocommerce_order_status_failed',     [ $this, 'release_booking' ] );
         add_action( 'woocommerce_order_status_refunded',   [ $this, 'release_booking' ] );
@@ -24,6 +31,39 @@ class RBA_Booking_Guard {
         add_action( 'rest_api_init',                       [ $this, 'register_rest_endpoints' ] );
         add_action( 'wp_ajax_rba_check_availability',        [ $this, 'ajax_check_availability' ] );
         add_action( 'wp_ajax_nopriv_rba_check_availability', [ $this, 'ajax_check_availability' ] );
+    }
+
+    /**
+     * Persist booking meta từ cart item data → order item meta.
+     *
+     * Đây là hook BẮT BUỘC để PMS đọc được tf_room_id, tf_check_in, tf_check_out
+     * từ order. WooCommerce KHÔNG tự copy custom cart_item_data vào order item.
+     *
+     * @param \WC_Order_Item_Product $item
+     * @param string                 $cart_item_key
+     * @param array                  $values         Cart item data
+     * @param \WC_Order              $order
+     */
+    public function persist_booking_meta_to_order_item(
+        \WC_Order_Item_Product $item,
+        string $cart_item_key,
+        array $values,
+        \WC_Order $order
+    ): void {
+        // Các meta keys cần copy từ cart → order item
+        $booking_keys = [
+            'tf_room_id', 'room_id',
+            'tf_check_in', 'check_in',
+            'tf_check_out', 'check_out',
+            'adults', 'children',
+            'rba_nights', 'rba_total',
+        ];
+
+        foreach ( $booking_keys as $key ) {
+            if ( ! empty( $values[ $key ] ) ) {
+                $item->add_meta_data( $key, $values[ $key ], true );
+            }
+        }
     }
 
     // ─── SESSION (không dùng PHP session_start) ───────────────────────────────
@@ -131,19 +171,32 @@ class RBA_Booking_Guard {
     }
 
     public function final_availability_check(): void {
-        if ( ! WC()->cart ) return;
-        foreach ( WC()->cart->get_cart() as $item ) {
-            $room_id   = absint( $item['tf_room_id'] ?? $item['room_id'] ?? 0 );
-            $check_in  = $item['tf_check_in']  ?? $item['check_in']  ?? '';
-            $check_out = $item['tf_check_out'] ?? $item['check_out'] ?? '';
-            if ( ! $room_id || ! $check_in || ! $check_out ) continue;
-            if ( ! $this->is_lock_valid( $room_id, $check_in, $check_out ) ) {
-                if ( ! self::acquire_lock( $room_id, $check_in, $check_out ) ) {
-                    wc_add_notice(
-                        sprintf( '⚠️ Phòng <strong>%s</strong> không còn trống. <a href="%s">Xóa và chọn lại.</a>', esc_html( get_the_title( $room_id ) ), esc_url( wc_get_cart_url() ) ),
-                        'error'
-                    );
+        try {
+            if ( ! function_exists('WC') || ! WC()->cart ) return;
+
+            foreach ( WC()->cart->get_cart() as $item ) {
+                $room_id   = absint( $item['tf_room_id'] ?? $item['room_id'] ?? 0 );
+                $check_in  = (string) ( $item['tf_check_in']  ?? $item['check_in']  ?? '' );
+                $check_out = (string) ( $item['tf_check_out'] ?? $item['check_out'] ?? '' );
+                if ( ! $room_id || ! $check_in || ! $check_out ) continue;
+                if ( get_post_type( $room_id ) !== 'tf_room' ) continue;
+
+                if ( ! $this->is_lock_valid( $room_id, $check_in, $check_out ) ) {
+                    if ( ! self::acquire_lock( $room_id, $check_in, $check_out ) ) {
+                        wc_add_notice(
+                            sprintf(
+                                '⚠️ Phòng <strong>%s</strong> không còn trống. <a href="%s">Quay lại giỏ hàng.</a>',
+                                esc_html( get_the_title( $room_id ) ),
+                                esc_url( wc_get_cart_url() )
+                            ),
+                            'error'
+                        );
+                    }
                 }
+            }
+        } catch ( \Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( '[RBA] final_availability_check error: ' . $e->getMessage() );
             }
         }
     }
@@ -158,19 +211,65 @@ class RBA_Booking_Guard {
     }
 
     /**
+     * Helper: lấy booking info từ order item, với fallback sang order meta.
+     * Cần thiết cho orders cũ (trước khi có persist_booking_meta_to_order_item).
+     */
+    private static function get_booking_info_from_item(
+        \WC_Order_Item_Product $item,
+        \WC_Order $order
+    ): array {
+        $room_id   = absint( $item->get_meta( 'tf_room_id' )  ?: $item->get_meta( 'room_id' ) );
+        $check_in  = (string) ( $item->get_meta( 'tf_check_in' )  ?: $item->get_meta( 'check_in' ) );
+        $check_out = (string) ( $item->get_meta( 'tf_check_out' ) ?: $item->get_meta( 'check_out' ) );
+
+        // Fallback: đọc từ order meta (Tourfic lưu ở đây)
+        if ( ! $room_id ) {
+            $room_id = absint( $order->get_meta( 'tf_room_id' ) ?: $order->get_meta( 'room_id' ) );
+        }
+        if ( ! $check_in ) {
+            $check_in = (string) ( $order->get_meta( 'tf_check_in' ) ?: $order->get_meta( 'check_in' ) );
+        }
+        if ( ! $check_out ) {
+            $check_out = (string) ( $order->get_meta( 'tf_check_out' ) ?: $order->get_meta( 'check_out' ) );
+        }
+
+        return [ $room_id, $check_in, $check_out ];
+    }
+
+    /**
+     * Hold booking khi order chuyển sang on-hold (đặt cọc giữ phòng).
+     * Chỉ lock, không decrement availability.
+     */
+    public function hold_booking( int $order_id ): void {
+        $order = wc_get_order( $order_id );
+        if ( ! $order ) return;
+
+        foreach ( $order->get_items() as $item ) {
+            /** @var \WC_Order_Item_Product $item */
+            [ $room_id, $check_in, $check_out ] = self::get_booking_info_from_item( $item, $order );
+            if ( ! $room_id || ! $check_in || ! $check_out ) continue;
+
+            // Giữ lock nhưng không decrement availability
+            // (availability chỉ decrement khi processing/payment_complete)
+            self::acquire_lock( $room_id, $check_in, $check_out );
+        }
+
+        $order->update_meta_data( '_rba_pms_status', 'holding' );
+        $order->save_meta_data();
+    }
+
+    /**
      * Idempotent confirm — dùng order meta '_rba_booking_confirmed' tránh double decrement.
      */
     public function confirm_booking( int $order_id ): void {
         $order = wc_get_order( $order_id );
         if ( ! $order ) return;
-        if ( '1' === $order->get_meta( '_rba_booking_confirmed' ) ) return; // đã xử lý rồi
+        if ( '1' === $order->get_meta( '_rba_booking_confirmed' ) ) return;
 
         $confirmed = false;
         foreach ( $order->get_items() as $item ) {
             /** @var \WC_Order_Item_Product $item */
-            $room_id   = absint( $item->get_meta( 'tf_room_id' ) ?: $item->get_meta( 'room_id' ) );
-            $check_in  = $item->get_meta( 'tf_check_in' )  ?: $item->get_meta( 'check_in' );
-            $check_out = $item->get_meta( 'tf_check_out' ) ?: $item->get_meta( 'check_out' );
+            [ $room_id, $check_in, $check_out ] = self::get_booking_info_from_item( $item, $order );
             if ( ! $room_id || ! $check_in || ! $check_out ) continue;
 
             RBA_Database::decrement_availability( $room_id, $check_in, $check_out );
@@ -180,6 +279,7 @@ class RBA_Booking_Guard {
 
         if ( $confirmed ) {
             $order->update_meta_data( '_rba_booking_confirmed', '1' );
+            $order->update_meta_data( '_rba_pms_status', 'confirmed' );
             $order->save_meta_data();
             do_action( 'rba_booking_confirmed', $order_id, $order );
         }
@@ -188,22 +288,25 @@ class RBA_Booking_Guard {
     public function release_booking( int $order_id ): void {
         $order = wc_get_order( $order_id );
         if ( ! $order ) return;
-        if ( '1' !== $order->get_meta( '_rba_booking_confirmed' ) ) return; // belum pernah confirm
 
         foreach ( $order->get_items() as $item ) {
             /** @var \WC_Order_Item_Product $item */
-            $room_id   = absint( $item->get_meta( 'tf_room_id' ) ?: $item->get_meta( 'room_id' ) );
-            $check_in  = $item->get_meta( 'tf_check_in' )  ?: $item->get_meta( 'check_in' );
-            $check_out = $item->get_meta( 'tf_check_out' ) ?: $item->get_meta( 'check_out' );
+            [ $room_id, $check_in, $check_out ] = self::get_booking_info_from_item( $item, $order );
             if ( ! $room_id || ! $check_in || ! $check_out ) continue;
-            RBA_Database::increment_availability( $room_id, $check_in, $check_out );
+
+            // Chỉ increment nếu đã từng confirmed
+            if ( '1' === $order->get_meta( '_rba_booking_confirmed' ) ) {
+                RBA_Database::increment_availability( $room_id, $check_in, $check_out );
+            }
         }
 
         self::release_lock_by_order( $order_id );
         $order->delete_meta_data( '_rba_booking_confirmed' );
+        $order->update_meta_data( '_rba_pms_status', 'cancelled' );
         $order->save_meta_data();
         do_action( 'rba_booking_released', $order_id, $order );
     }
+
 
     public function release_lock_on_remove( string $cart_item_key, \WC_Cart $cart ): void {
         $item = $cart->removed_cart_contents[ $cart_item_key ] ?? [];

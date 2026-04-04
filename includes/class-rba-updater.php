@@ -102,12 +102,12 @@ class RBA_Updater {
             if ( false !== $cached ) return $cached ?: null;
         }
 
-        // $info = match ( $this->mode ) {
-        //     self::MODE_RAW_FILE => $this->fetch_via_raw_file(),
-        //     self::MODE_TAGS     => $this->fetch_via_tags(),
-        //     self::MODE_RELEASES => $this->fetch_via_releases(),
-        //     default             => $this->fetch_via_raw_file(),
-        // };
+        $info = match ( $this->mode ) {
+            self::MODE_RAW_FILE => $this->fetch_via_raw_file(),
+            self::MODE_TAGS     => $this->fetch_via_tags(),
+            self::MODE_RELEASES => $this->fetch_via_releases(),
+            default             => $this->fetch_via_raw_file(),
+        };
 
         // Cache kết quả (kể cả null → cache [] để tránh spam API)
         set_transient( self::CACHE_KEY, $info ?? [], $info ? self::CACHE_TTL : 15 * MINUTE_IN_SECONDS );
@@ -545,15 +545,15 @@ class RBA_Updater {
         ];
     }
 
-    // private function get_check_url(): string {
-    //     if ( ! $this->github_user || ! $this->github_repo ) return '(cần điền user và repo)';
-    //     return match ( $this->mode ) {
-    //         self::MODE_RAW_FILE => self::RAW_BASE . "/{$this->github_user}/{$this->github_repo}/{$this->github_branch}/" . basename( $this->plugin_file ),
-    //         self::MODE_TAGS     => self::API_BASE . "/repos/{$this->github_user}/{$this->github_repo}/tags",
-    //         self::MODE_RELEASES => self::API_BASE . "/repos/{$this->github_user}/{$this->github_repo}/releases/latest",
-    //         default             => '',
-    //     };
-    // }
+    private function get_check_url(): string {
+        if ( ! $this->github_user || ! $this->github_repo ) return '(cần điền user và repo)';
+        return match ( $this->mode ) {
+            self::MODE_RAW_FILE => self::RAW_BASE . "/{$this->github_user}/{$this->github_repo}/{$this->github_branch}/" . basename( $this->plugin_file ),
+            self::MODE_TAGS     => self::API_BASE . "/repos/{$this->github_user}/{$this->github_repo}/tags",
+            self::MODE_RELEASES => self::API_BASE . "/repos/{$this->github_user}/{$this->github_repo}/releases/latest",
+            default             => '',
+        };
+    }
 
     private function markdown_to_html( string $md ): string {
         if ( ! $md ) return '';

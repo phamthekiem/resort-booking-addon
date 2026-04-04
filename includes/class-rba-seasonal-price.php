@@ -1,276 +1,285 @@
 <?php
 /**
- * RBA_Seasonal_Price
+ * RBA_Seasonal_Price — Engine giá theo mùa (v3 - safe)
  *
- * Engine giá theo mùa và ngày cụ thể.
+ * KIẾN TRÚC AN TOÀN:
+ * - KHÔNG hook vào woocommerce_product_get_price (gây recursive loop)
+ * - KHÔNG hook vào woocommerce_before_calculate_totals (gây infinite recalc)
+ * - Giá được SET THẲNG vào product trong DB khi add_to_cart (trong class-rba-room-template.php)
+ * - Plugin chỉ hook woocommerce_cart_item_subtotal để hiển thị "N đêm" info
  *
- * Logic ưu tiên (từ cao → thấp):
- *  1. Date Price (ngày cụ thể) – priority = 1
- *  2. Seasonal Price (khoảng ngày) – priority theo cột
- *  3. Base price của phòng (Tourfic default)
+ * @package ResortBookingAddon
+ * @since   1.5.3
  */
 defined( 'ABSPATH' ) || exit;
 
 class RBA_Seasonal_Price {
 
     public function __construct() {
-        // Hook vào Tourfic price calculation
-        add_filter( 'tf_hotel_room_price',        [ $this, 'apply_price' ], 20, 4 );
-        add_filter( 'tf_room_price_per_night',    [ $this, 'apply_price' ], 20, 4 );
-        add_filter( 'tf_booking_total_price',     [ $this, 'recalculate_total' ], 20, 3 );
+        // Admin meta boxes
+        add_action( 'add_meta_boxes',    [ $this, 'add_seasonal_metabox' ] );
+        add_action( 'save_post_tf_room', [ $this, 'save_seasonal_prices' ] );
 
-        // Admin: thêm meta box giá theo mùa
-        add_action( 'add_meta_boxes',             [ $this, 'add_seasonal_metabox' ] );
-        add_action( 'save_post_tf_room',          [ $this, 'save_seasonal_prices' ] );
+        // Override giá cart item — đọc rba_total từ cart meta (lưu khi add_to_cart)
+        // Priority 10 — chạy trước các hook khác của WC
+        add_action( 'woocommerce_before_calculate_totals', [ $this, 'set_cart_item_price' ], 10 );
 
-        // AJAX: lấy giá theo ngày (cho booking form)
+        // Hiển thị "N đêm" info trong cart/checkout
+        add_filter( 'woocommerce_cart_item_subtotal', [ $this, 'display_nights_info' ], 20, 3 );
+
+        // AJAX price calendar
         add_action( 'wp_ajax_rba_get_price_calendar',        [ $this, 'ajax_price_calendar' ] );
         add_action( 'wp_ajax_nopriv_rba_get_price_calendar', [ $this, 'ajax_price_calendar' ] );
 
-        // Enqueue scripts cho price calendar
-        add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_scripts' ] );
+        // Fire hook để các module khác biết giá đã thay đổi
+        add_action( 'rba_price_updated', [ $this, 'on_price_updated' ], 10, 4 );
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // CORE: Tính giá
-    // ────────────────────────────────────────────────────────────────────────
+    // =========================================================================
+    // WOOCOMMERCE CART PRICE — đọc từ rba_total trong cart item meta
+    // =========================================================================
 
     /**
-     * Trả về giá/đêm cho room_id vào ngày cụ thể.
+     * Set giá cart item từ rba_total được lưu khi add_to_cart.
+     *
+     * Cơ chế:
+     * - ajax_add_to_cart tính giá đúng (seasonal) → lưu vào cart_item_data['rba_total']
+     * - Hook này đọc rba_total và set_price() vào WC_Product object (chỉ trong memory)
+     * - WC tính total dựa trên giá này → hiển thị và thanh toán đúng
+     * - Không save() vào DB → không ảnh hưởng product gốc của Tourfic
      */
-    public static function get_price_for_date( int $room_id, string $date ): ?float {
+    public function set_cart_item_price( \WC_Cart $cart ): void {
+        if ( is_admin() && ! defined( 'DOING_AJAX' ) ) return;
+        if ( did_action( 'woocommerce_before_calculate_totals' ) > 1 ) return;
+
+        foreach ( $cart->get_cart() as $cart_item ) {
+            // Chỉ xử lý item có rba_total (do plugin add_to_cart tạo)
+            $rba_total = (float) ( $cart_item['rba_total'] ?? 0 );
+            if ( $rba_total <= 0 ) continue;
+
+            $product = $cart_item['data'] ?? null;
+            if ( ! $product instanceof \WC_Product ) continue;
+
+            // set_price() chỉ trong memory — an toàn, không ghi DB
+            $product->set_price( $rba_total );
+        }
+    }
+
+    // =========================================================================
+    // CORE PRICE METHODS — static, dùng ở mọi nơi
+    // =========================================================================
+
+    /**
+     * Lấy base price từ Tourfic meta.
+     * Tourfic lưu tại: tf_search_price (confirmed từ debug)
+     */
+    public static function get_base_price( int $room_id ): float {
+        $sources = [ 'tf_search_price', '_tf_price' ];
+        foreach ( $sources as $key ) {
+            $val = get_post_meta( $room_id, $key, true );
+            if ( $val !== '' && (float) $val > 0 ) return (float) $val;
+        }
+        // ACF fallback
+        if ( function_exists( 'get_field' ) ) {
+            $acf = get_field( 'room_base_price', $room_id );
+            if ( $acf && (float) $acf > 0 ) return (float) $acf;
+        }
+        // tf_room_opt JSON fallback
+        $opt = get_post_meta( $room_id, 'tf_room_opt', true );
+        if ( $opt ) {
+            $arr = is_array( $opt ) ? $opt : json_decode( $opt, true );
+            foreach ( [ 'tf_price', 'price', 'tf_room_price', 'tf_search_price' ] as $k ) {
+                if ( isset( $arr[$k] ) && (float) $arr[$k] > 0 ) return (float) $arr[$k];
+            }
+        }
+        return 0.0;
+    }
+
+    /**
+     * Giá cho 1 ngày cụ thể.
+     */
+    public static function get_price_for_date( int $room_id, string $date ): float {
         global $wpdb;
 
-        // ── 1. Kiểm tra Date Price (override cụ thể) ─────────────────────────
+        // 1. Date override
         $date_price = $wpdb->get_var( $wpdb->prepare(
-            "SELECT price FROM {$wpdb->prefix}rba_date_prices
-             WHERE room_id = %d AND price_date = %s",
+            "SELECT price FROM {$wpdb->prefix}rba_date_prices WHERE room_id = %d AND price_date = %s",
             $room_id, $date
         ) );
-        if ( $date_price !== null ) {
-            return (float) $date_price;
-        }
+        if ( $date_price !== null ) return (float) $date_price;
 
-        // ── 2. Kiểm tra Seasonal Price ────────────────────────────────────────
+        // 2. Seasonal price
         $season = $wpdb->get_row( $wpdb->prepare(
-            "SELECT price_type, price_value
-             FROM {$wpdb->prefix}rba_seasonal_prices
-             WHERE room_id  = %d
-               AND date_from <= %s
-               AND date_to   >= %s
-             ORDER BY priority ASC
-             LIMIT 1",
+            "SELECT price_type, price_value FROM {$wpdb->prefix}rba_seasonal_prices
+             WHERE room_id = %d AND date_from <= %s AND date_to >= %s
+             ORDER BY priority ASC LIMIT 1",
             $room_id, $date, $date
         ) );
 
-        // ── 3. Base price từ Tourfic meta ─────────────────────────────────────
-        $base_price = (float) ( get_post_meta( $room_id, '_tf_price', true )
-                             ?: get_field( 'room_base_price', $room_id )
-                             ?: 0 );
+        $base = self::get_base_price( $room_id );
+        if ( ! $season ) return $base;
 
-        if ( ! $season ) return $base_price;
-
-        if ( $season->price_type === 'fixed' ) {
-            return (float) $season->price_value;
-        }
-
-        // percent: điều chỉnh +/- % so với base
-        return $base_price * ( 1 + ( (float) $season->price_value / 100 ) );
+        return $season->price_type === 'fixed'
+            ? (float) $season->price_value
+            : ( $base > 0 ? $base * ( 1 + (float) $season->price_value / 100 ) : 0.0 );
     }
 
     /**
-     * Tính tổng giá cho 1 khoảng ngày (check-in đến check-out).
+     * Tổng giá cho khoảng ngày.
      */
     public static function calculate_total( int $room_id, string $check_in, string $check_out ): float {
-        $total   = 0.0;
-        $date    = new DateTime( $check_in );
-        $end     = new DateTime( $check_out );
-
-        while ( $date < $end ) {
-            $total += self::get_price_for_date( $room_id, $date->format( 'Y-m-d' ) );
-            $date->modify( '+1 day' );
-        }
+        if ( ! $check_in || ! $check_out ) return 0.0;
+        $total = 0.0;
+        try {
+            $date = new DateTime( $check_in );
+            $end  = new DateTime( $check_out );
+            while ( $date < $end ) {
+                $total += self::get_price_for_date( $room_id, $date->format( 'Y-m-d' ) );
+                $date->modify( '+1 day' );
+            }
+        } catch ( \Throwable $e ) { return 0.0; }
         return $total;
     }
 
+    // =========================================================================
+    // WC DISPLAY — chỉ hiển thị thêm info "N đêm", không can thiệp giá tính
+    // =========================================================================
+
     /**
-     * Lấy price map (ngày → giá) trong 1 tháng, dùng cho calendar.
+     * Thêm thông tin "N đêm" vào subtotal trong cart/checkout.
+     * Không thay đổi giá — chỉ thay đổi text hiển thị.
      */
-    public static function get_monthly_prices( int $room_id, int $year, int $month ): array {
-        $result = [];
-        $days   = cal_days_in_month( CAL_GREGORIAN, $month, $year );
+    public function display_nights_info( $subtotal, array $cart_item, string $cart_item_key ): string {
+        try {
+            $room_id   = (int) ( $cart_item['tf_room_id']  ?? $cart_item['room_id']  ?? 0 );
+            $check_in  = (string) ( $cart_item['tf_check_in']  ?? $cart_item['check_in']  ?? '' );
+            $check_out = (string) ( $cart_item['tf_check_out'] ?? $cart_item['check_out'] ?? '' );
+            if ( ! $room_id || ! $check_in || ! $check_out ) return (string) $subtotal;
 
-        for ( $d = 1; $d <= $days; $d++ ) {
-            $date          = sprintf( '%04d-%02d-%02d', $year, $month, $d );
-            $result[$date] = self::get_price_for_date( $room_id, $date );
+            $nights = (int) ( ( strtotime( $check_out ) - strtotime( $check_in ) ) / DAY_IN_SECONDS );
+            if ( $nights <= 0 ) return (string) $subtotal;
+
+            return $subtotal . ' <small style="color:#888;font-size:11px;display:block">'
+                . $nights . ' đêm: ' . esc_html( $check_in ) . ' → ' . esc_html( $check_out )
+                . '</small>';
+        } catch ( \Throwable $e ) {
+            return (string) $subtotal;
         }
-        return $result;
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // HOOKS: Gắn vào Tourfic price filters
-    // ────────────────────────────────────────────────────────────────────────
-
-    public function apply_price( $price, $room_id = null, $check_in = null, $check_out = null ) {
-        if ( ! $room_id || ! $check_in || ! $check_out ) return $price;
-
-        $calculated = self::calculate_total( (int) $room_id, $check_in, $check_out );
-        return $calculated > 0 ? $calculated : $price;
+    /**
+     * Hook rba_price_updated: sync giá mới vào tf_search_price
+     */
+    public function on_price_updated( int $room_id, string $from, string $to, float $price ): void {
+        // Thông báo cho các module khác (KiotViet, OTA API...)
+        // Không làm gì thêm ở đây vì seasonal price được tính runtime
     }
 
-    public function recalculate_total( $total, $booking_data, $room_id ) {
-        if ( empty( $booking_data['check_in'] ) || empty( $booking_data['check_out'] ) ) {
-            return $total;
-        }
-        $calculated = self::calculate_total(
-            (int) $room_id,
-            $booking_data['check_in'],
-            $booking_data['check_out']
-        );
-        return $calculated > 0 ? $calculated : $total;
-    }
+    // =========================================================================
+    // ADMIN META BOX
+    // =========================================================================
 
-    // ────────────────────────────────────────────────────────────────────────
-    // ADMIN: Meta box quản lý giá theo mùa
-    // ────────────────────────────────────────────────────────────────────────
+    public static function get_price_source_info( int $room_id ): array {
+        $tf  = (float) get_post_meta( $room_id, 'tf_search_price', true );
+        $tf2 = (float) get_post_meta( $room_id, '_tf_price', true );
+        $acf = function_exists('get_field') ? (float) get_field( 'room_base_price', $room_id ) : 0;
+        return [
+            'sources'   => [
+                'tf_search_price' => $tf,
+                '_tf_price'       => $tf2,
+                'room_base_price' => $acf,
+            ],
+            'effective' => self::get_base_price( $room_id ),
+        ];
+    }
 
     public function add_seasonal_metabox(): void {
-        add_meta_box(
-            'rba_seasonal_prices',
-            '🗓️ Giá theo Mùa & Ngày Đặc Biệt',
-            [ $this, 'render_seasonal_metabox' ],
-            'tf_room',
-            'normal',
-            'high'
-        );
+        add_meta_box( 'rba_seasonal_prices', 'Giá theo Mùa & Ngày Đặc Biệt', [ $this, 'render_seasonal_metabox' ], 'tf_room', 'normal', 'high' );
     }
 
     public function render_seasonal_metabox( \WP_Post $post ): void {
         global $wpdb;
         wp_nonce_field( 'rba_seasonal_nonce', 'rba_seasonal_nonce_field' );
-
-        $seasons = $wpdb->get_results( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}rba_seasonal_prices WHERE room_id = %d ORDER BY priority, date_from",
-            $post->ID
-        ) );
-
-        $date_prices = $wpdb->get_results( $wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}rba_date_prices WHERE room_id = %d ORDER BY price_date LIMIT 50",
-            $post->ID
-        ) );
+        $info = self::get_price_source_info( $post->ID );
+        $eff  = $info['effective'];
+        $seasons     = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->prefix}rba_seasonal_prices WHERE room_id = %d ORDER BY priority, date_from", $post->ID ) );
+        $date_prices = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->prefix}rba_date_prices WHERE room_id = %d ORDER BY price_date LIMIT 60", $post->ID ) );
         ?>
-        <div id="rba-seasonal-wrapper">
-            <h4>Giá theo Mùa (Season Pricing)</h4>
-            <table class="widefat" id="rba-seasons-table">
-                <thead>
-                    <tr>
-                        <th>Tên mùa</th>
-                        <th>Từ ngày</th>
-                        <th>Đến ngày</th>
-                        <th>Loại giá</th>
-                        <th>Giá / %</th>
-                        <th>Lưu tối thiểu</th>
-                        <th>Ưu tiên</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="rba-seasons-rows">
-                <?php foreach ( $seasons as $s ) : ?>
-                    <tr class="rba-season-row" data-id="<?php echo $s->id; ?>">
-                        <td><input type="text"   name="rba_season[<?php echo $s->id; ?>][name]"       value="<?php echo esc_attr($s->season_name); ?>" class="regular-text"></td>
-                        <td><input type="date"   name="rba_season[<?php echo $s->id; ?>][from]"       value="<?php echo $s->date_from; ?>"></td>
-                        <td><input type="date"   name="rba_season[<?php echo $s->id; ?>][to]"         value="<?php echo $s->date_to; ?>"></td>
-                        <td>
-                            <select name="rba_season[<?php echo $s->id; ?>][type]">
-                                <option value="fixed"   <?php selected($s->price_type,'fixed'); ?>>Cố định (VNĐ)</option>
-                                <option value="percent" <?php selected($s->price_type,'percent'); ?>>% điều chỉnh</option>
-                            </select>
-                        </td>
-                        <td><input type="number" name="rba_season[<?php echo $s->id; ?>][value]"      value="<?php echo $s->price_value; ?>" step="0.01"></td>
-                        <td><input type="number" name="rba_season[<?php echo $s->id; ?>][min_nights]" value="<?php echo $s->min_nights; ?>" min="1" style="width:60px"></td>
-                        <td><input type="number" name="rba_season[<?php echo $s->id; ?>][priority]"   value="<?php echo $s->priority; ?>"   min="1" style="width:60px"></td>
-                        <td><button type="button" class="button rba-delete-season" data-id="<?php echo $s->id; ?>">Xóa</button></td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-            <button type="button" class="button button-secondary" id="rba-add-season">+ Thêm Mùa</button>
-
-            <hr>
-            <h4>Giá Ngày Cụ Thể (Date Override)</h4>
-            <p class="description">Ghi đè giá cho ngày cụ thể (ưu tiên cao nhất, bỏ qua mùa).</p>
-            <table class="widefat" id="rba-dates-table">
-                <thead>
-                    <tr><th>Ngày</th><th>Giá</th><th>Ghi chú</th><th></th></tr>
-                </thead>
-                <tbody id="rba-dates-rows">
-                <?php foreach ( $date_prices as $dp ) : ?>
-                    <tr class="rba-date-row" data-id="<?php echo $dp->id; ?>">
-                        <td><input type="date"   name="rba_date_price[<?php echo $dp->id; ?>][date]"  value="<?php echo $dp->price_date; ?>"></td>
-                        <td><input type="number" name="rba_date_price[<?php echo $dp->id; ?>][price]" value="<?php echo $dp->price; ?>" step="1000"></td>
-                        <td><input type="text"   name="rba_date_price[<?php echo $dp->id; ?>][note]"  value="<?php echo esc_attr($dp->note); ?>" class="regular-text"></td>
-                        <td><button type="button" class="button rba-delete-date" data-id="<?php echo $dp->id; ?>">Xóa</button></td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-            <button type="button" class="button button-secondary" id="rba-add-date">+ Thêm Ngày</button>
-
-            <input type="hidden" id="rba_deleted_seasons" name="rba_deleted_seasons" value="">
-            <input type="hidden" id="rba_deleted_dates"   name="rba_deleted_dates"   value="">
+        <!-- Price source info -->
+        <div style="background:<?php echo $eff>0?'#e8f5e9':'#fce4ec'; ?>;border:1px solid <?php echo $eff>0?'#a5d6a7':'#ef9a9a'; ?>;border-radius:6px;padding:12px;margin-bottom:14px;font-size:13px">
+            <?php if($eff>0): ?>
+            <strong>Giá base:</strong> <strong style="color:#2e7d32;font-size:15px"><?php echo number_format($eff,0,',','.'); ?> VNĐ/đêm</strong>
+            <span style="color:#888;margin-left:10px;font-size:11px">
+                (tf_search_price: <?php echo number_format($info['sources']['tf_search_price'],0,',','.'); ?> |
+                _tf_price: <?php echo number_format($info['sources']['_tf_price'],0,',','.'); ?>)
+            </span>
+            <?php else: ?>
+            <strong style="color:#c62828">⚠ Chưa có giá base!</strong>
+            Điền giá vào trường "<strong>Price Per Night</strong>" trong tab Booking của Tourfic, hoặc điền vào ô bên dưới.
+            <?php endif; ?>
         </div>
 
-        <style>
-        #rba-seasonal-wrapper table td input { max-width: 130px; }
-        #rba-seasonal-wrapper h4 { margin-top: 16px; }
-        </style>
+        <!-- Quick price override -->
+        <div style="background:#fff3e0;border:1px solid #ffb74d;border-radius:6px;padding:12px;margin-bottom:16px">
+            <label style="font-weight:600">Đặt giá cơ bản/đêm (VNĐ) — sync vào Tourfic:</label><br>
+            <input type="number" name="rba_base_price_override" value="<?php echo esc_attr($eff?:''); ?>"
+                   style="width:180px;margin-top:6px" min="0" step="1000" placeholder="VD: 1700000">
+            <span style="font-size:12px;color:#888;margin-left:8px">Sẽ sync vào tf_search_price khi Save</span>
+        </div>
+
+        <!-- Seasons table -->
+        <h4 style="margin:0 0 8px">Giá theo Mùa</h4>
+        <table class="widefat" style="margin-bottom:8px">
+            <thead><tr>
+                <th>Tên mùa</th><th style="width:115px">Từ ngày</th><th style="width:115px">Đến ngày</th>
+                <th style="width:100px">Loại</th><th style="width:110px">Giá / %</th>
+                <th style="width:60px">Ưu tiên</th><th style="width:50px"></th>
+            </tr></thead>
+            <tbody id="rba-seasons-body">
+            <?php foreach($seasons as $i=>$s): ?>
+            <tr>
+                <td><input type="text"   name="rba_season[<?php echo $i;?>][name]"        value="<?php echo esc_attr($s->season_name);?>"  class="widefat" placeholder="Tên mùa"></td>
+                <td><input type="date"   name="rba_season[<?php echo $i;?>][date_from]"   value="<?php echo esc_attr($s->date_from);?>"    class="widefat"></td>
+                <td><input type="date"   name="rba_season[<?php echo $i;?>][date_to]"     value="<?php echo esc_attr($s->date_to);?>"      class="widefat"></td>
+                <td><select name="rba_season[<?php echo $i;?>][price_type]" class="widefat">
+                    <option value="fixed"   <?php selected($s->price_type,'fixed');?>>Cố định (VNĐ)</option>
+                    <option value="percent" <?php selected($s->price_type,'percent');?>>% điều chỉnh</option>
+                </select></td>
+                <td><input type="number" name="rba_season[<?php echo $i;?>][price_value]" value="<?php echo esc_attr($s->price_value);?>"  class="widefat" step="0.01"></td>
+                <td><input type="number" name="rba_season[<?php echo $i;?>][priority]"    value="<?php echo esc_attr($s->priority);?>"     class="widefat" min="1" max="99"></td>
+                <td><button type="button" class="button button-small rba-rm-s" style="color:#c62828">✕</button></td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <button type="button" class="button" id="rba-add-s">+ Thêm mùa</button>
+
+        <!-- Date price table -->
+        <h4 style="margin:18px 0 8px">Giá Ngày Cụ Thể (Override)</h4>
+        <table class="widefat" style="margin-bottom:8px">
+            <thead><tr><th style="width:130px">Ngày</th><th style="width:160px">Giá (VNĐ)</th><th style="width:50px"></th></tr></thead>
+            <tbody id="rba-dates-body">
+            <?php foreach($date_prices as $j=>$dp): ?>
+            <tr>
+                <td><input type="date"   name="rba_date_price[<?php echo $j;?>][date]"  value="<?php echo esc_attr($dp->price_date);?>" class="widefat"></td>
+                <td><input type="number" name="rba_date_price[<?php echo $j;?>][price]" value="<?php echo esc_attr($dp->price);?>"      class="widefat" min="0" step="1000"></td>
+                <td><button type="button" class="button button-small rba-rm-d" style="color:#c62828">✕</button></td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <button type="button" class="button" id="rba-add-d">+ Thêm ngày</button>
+
         <script>
         (function($){
-            let seasonIdx = 9000, dateIdx = 9000;
-
-            $('#rba-add-season').on('click', function() {
-                seasonIdx++;
-                $('#rba-seasons-rows').append(`
-                    <tr class="rba-season-row">
-                        <td><input type="text"   name="rba_season[new_${seasonIdx}][name]"       class="regular-text" placeholder="VD: Mùa hè 2025"></td>
-                        <td><input type="date"   name="rba_season[new_${seasonIdx}][from]"></td>
-                        <td><input type="date"   name="rba_season[new_${seasonIdx}][to]"></td>
-                        <td><select name="rba_season[new_${seasonIdx}][type]"><option value="fixed">Cố định</option><option value="percent">%</option></select></td>
-                        <td><input type="number" name="rba_season[new_${seasonIdx}][value]"      step="0.01"></td>
-                        <td><input type="number" name="rba_season[new_${seasonIdx}][min_nights]" value="1" min="1" style="width:60px"></td>
-                        <td><input type="number" name="rba_season[new_${seasonIdx}][priority]"   value="10" min="1" style="width:60px"></td>
-                        <td></td>
-                    </tr>`);
+            var si=<?php echo count($seasons); ?>, di=<?php echo count($date_prices); ?>;
+            $('#rba-add-s').on('click',function(){
+                $('#rba-seasons-body').append('<tr><td><input type="text" name="rba_season['+si+'][name]" class="widefat" placeholder="Tên mùa"></td><td><input type="date" name="rba_season['+si+'][date_from]" class="widefat"></td><td><input type="date" name="rba_season['+si+'][date_to]" class="widefat"></td><td><select name="rba_season['+si+'][price_type]" class="widefat"><option value="fixed">Cố định (VNĐ)</option><option value="percent">% điều chỉnh</option></select></td><td><input type="number" name="rba_season['+si+'][price_value]" class="widefat" step="0.01" value="0"></td><td><input type="number" name="rba_season['+si+'][priority]" class="widefat" value="10" min="1" max="99"></td><td><button type="button" class="button button-small rba-rm-s" style="color:#c62828">✕</button></td></tr>'); si++;
             });
-
-            $('#rba-add-date').on('click', function() {
-                dateIdx++;
-                $('#rba-dates-rows').append(`
-                    <tr class="rba-date-row">
-                        <td><input type="date"   name="rba_date_price[new_${dateIdx}][date]"></td>
-                        <td><input type="number" name="rba_date_price[new_${dateIdx}][price]" step="1000"></td>
-                        <td><input type="text"   name="rba_date_price[new_${dateIdx}][note]"  class="regular-text"></td>
-                        <td></td>
-                    </tr>`);
+            $('#rba-add-d').on('click',function(){
+                $('#rba-dates-body').append('<tr><td><input type="date" name="rba_date_price['+di+'][date]" class="widefat"></td><td><input type="number" name="rba_date_price['+di+'][price]" class="widefat" min="0" step="1000" placeholder="1700000"></td><td><button type="button" class="button button-small rba-rm-d" style="color:#c62828">✕</button></td></tr>'); di++;
             });
-
-            $(document).on('click', '.rba-delete-season', function() {
-                const id = $(this).data('id');
-                if (id) {
-                    const del = $('#rba_deleted_seasons');
-                    del.val(del.val() ? del.val() + ',' + id : id);
-                }
-                $(this).closest('tr').remove();
-            });
-
-            $(document).on('click', '.rba-delete-date', function() {
-                const id = $(this).data('id');
-                if (id) {
-                    const del = $('#rba_deleted_dates');
-                    del.val(del.val() ? del.val() + ',' + id : id);
-                }
-                $(this).closest('tr').remove();
-            });
+            $(document).on('click','.rba-rm-s,.rba-rm-d',function(){ $(this).closest('tr').remove(); });
         })(jQuery);
         </script>
         <?php
@@ -279,113 +288,99 @@ class RBA_Seasonal_Price {
     public function save_seasonal_prices( int $post_id ): void {
         if ( ! isset( $_POST['rba_seasonal_nonce_field'] )
              || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['rba_seasonal_nonce_field'] ) ), 'rba_seasonal_nonce' ) ) return;
-        if ( wp_is_post_autosave( $post_id ) || wp_is_post_revision( $post_id ) ) return;
-
+        if ( wp_is_post_autosave($post_id) || wp_is_post_revision($post_id) ) return;
         global $wpdb;
-        $sp_table = $wpdb->prefix . 'rba_seasonal_prices';
-        $dp_table = $wpdb->prefix . 'rba_date_prices';
 
-        // Xóa rows đã đánh dấu xóa
-        foreach ( [ 'rba_deleted_seasons', 'rba_deleted_dates' ] as $field ) {
-            $deleted = array_filter( array_map( 'intval', explode( ',', $_POST[$field] ?? '' ) ) );
-            foreach ( $deleted as $del_id ) {
-                $table = $field === 'rba_deleted_seasons' ? $sp_table : $dp_table;
-                $wpdb->delete( $table, [ 'id' => $del_id, 'room_id' => $post_id ], [ '%d', '%d' ] );
+        // Base price override
+        $bp = (float) ( $_POST['rba_base_price_override'] ?? 0 );
+        if ( $bp > 0 ) {
+            update_post_meta( $post_id, 'tf_search_price', $bp );
+            update_post_meta( $post_id, '_tf_price', $bp );
+            if ( function_exists('update_field') ) update_field( 'room_base_price', $bp, $post_id );
+            // Sync vào WC product nếu có
+            $product_id = (int) get_post_meta( $post_id, '_tf_wc_product_id', true );
+            if ( $product_id ) {
+                $p = wc_get_product( $product_id );
+                if ( $p ) { $p->set_regular_price($bp); $p->set_price($bp); $p->save(); }
             }
+            do_action( 'rba_price_updated', $post_id, '', '', $bp );
         }
 
-        // Lưu seasons
-        if ( ! empty( $_POST['rba_season'] ) && is_array( $_POST['rba_season'] ) ) {
-            foreach ( $_POST['rba_season'] as $key => $s ) {
-                $data = [
-                    'room_id'     => $post_id,
-                    'season_name' => sanitize_text_field( $s['name'] ),
-                    'date_from'   => sanitize_text_field( $s['from'] ),
-                    'date_to'     => sanitize_text_field( $s['to'] ),
-                    'price_type'  => in_array( $s['type'], [ 'fixed', 'percent' ] ) ? $s['type'] : 'fixed',
-                    'price_value' => (float) $s['value'],
-                    'min_nights'  => (int) $s['min_nights'],
-                    'priority'    => (int) $s['priority'],
-                ];
-
-                if ( str_starts_with( (string) $key, 'new_' ) ) {
-                    $wpdb->insert( $sp_table, $data );
-                } else {
-                    $wpdb->update( $sp_table, $data, [ 'id' => (int) $key, 'room_id' => $post_id ] );
-                }
-            }
+        // Seasons
+        $wpdb->delete( $wpdb->prefix.'rba_seasonal_prices', ['room_id'=>$post_id], ['%d'] );
+        foreach ( (array)wp_unslash($_POST['rba_season']??[]) as $s ) {
+            if ( empty($s['date_from']) || empty($s['date_to']) ) continue;
+            $wpdb->insert( $wpdb->prefix.'rba_seasonal_prices', [
+                'room_id'     => $post_id,
+                'season_name' => sanitize_text_field($s['name']??''),
+                'date_from'   => sanitize_text_field($s['date_from']),
+                'date_to'     => sanitize_text_field($s['date_to']),
+                'price_type'  => in_array($s['price_type']??'fixed',['fixed','percent'],true)?$s['price_type']:'fixed',
+                'price_value' => (float)($s['price_value']??0),
+                'priority'    => max(1,(int)($s['priority']??10)),
+            ], ['%d','%s','%s','%s','%s','%f','%d'] );
         }
 
-        // Lưu date prices
-        if ( ! empty( $_POST['rba_date_price'] ) && is_array( $_POST['rba_date_price'] ) ) {
-            foreach ( $_POST['rba_date_price'] as $key => $dp ) {
-                $data = [
-                    'room_id'    => $post_id,
-                    'price_date' => sanitize_text_field( $dp['date'] ),
-                    'price'      => (float) $dp['price'],
-                    'note'       => sanitize_text_field( $dp['note'] ),
-                ];
-
-                if ( str_starts_with( (string) $key, 'new_' ) ) {
-                    $wpdb->replace( $dp_table, $data );
-                } else {
-                    $wpdb->update( $dp_table, $data, [ 'id' => (int) $key, 'room_id' => $post_id ] );
-                }
-            }
+        // Date prices
+        $wpdb->delete( $wpdb->prefix.'rba_date_prices', ['room_id'=>$post_id], ['%d'] );
+        foreach ( (array)wp_unslash($_POST['rba_date_price']??[]) as $dp ) {
+            if ( empty($dp['date']) || !isset($dp['price']) ) continue;
+            $wpdb->insert( $wpdb->prefix.'rba_date_prices', [
+                'room_id'    => $post_id,
+                'price_date' => sanitize_text_field($dp['date']),
+                'price'      => (float)$dp['price'],
+            ], ['%d','%s','%f'] );
         }
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // AJAX: Price calendar cho frontend
-    // ────────────────────────────────────────────────────────────────────────
+    // =========================================================================
+    // AJAX
+    // =========================================================================
 
     public function ajax_price_calendar(): void {
+        if ( ob_get_level() ) ob_clean();
+        if ( ob_get_length() ) ob_clean();
         check_ajax_referer( 'rba_public_nonce', 'nonce' );
+        $room_id = absint( $_POST['room_id'] ?? 0 );
+        $year    = (int) ( $_POST['year']    ?? gmdate('Y') );
+        $month   = (int) ( $_POST['month']   ?? gmdate('m') );
+        if ( ! $room_id ) wp_send_json_error( 'Missing room_id' );
 
-        $room_id = (int) ( $_POST['room_id'] ?? 0 );
-        $year    = (int) ( $_POST['year']    ?? gmdate( 'Y' ) );
-        $month   = (int) ( $_POST['month']   ?? gmdate( 'm' ) );
+        $days   = cal_days_in_month( CAL_GREGORIAN, $month, $year );
+        $prices = [];
+        $min_p  = PHP_FLOAT_MAX;
+        $max_p  = 0.0;
 
-        if ( ! $room_id ) wp_send_json_error( 'Invalid room' );
-
-        // Lấy cả prices + availability
-        $prices = self::get_monthly_prices( $room_id, $year, $month );
-        $avail  = $this->get_monthly_availability( $room_id, $year, $month );
-
-        wp_send_json_success( [
-            'prices'       => $prices,
-            'availability' => $avail,
-        ] );
-    }
-
-    private function get_monthly_availability( int $room_id, int $year, int $month ): array {
-        global $wpdb;
-        $from = sprintf( '%04d-%02d-01', $year, $month );
-        $to   = date( 'Y-m-t', strtotime( $from ) );
-
-        $rows = $wpdb->get_results( $wpdb->prepare(
-            "SELECT avail_date, (total_rooms - booked_rooms) as available, blocked
-             FROM {$wpdb->prefix}rba_availability
-             WHERE room_id = %d AND avail_date BETWEEN %s AND %s",
-            $room_id, $from, $to
-        ), ARRAY_A );
-
-        $result = [];
-        foreach ( $rows as $r ) {
-            $result[ $r['avail_date'] ] = [
-                'available' => (int) $r['available'],
-                'blocked'   => (bool) $r['blocked'],
-            ];
+        for ( $d = 1; $d <= $days; $d++ ) {
+            $date     = sprintf('%04d-%02d-%02d', $year, $month, $d);
+            $price    = self::get_price_for_date( $room_id, $date );
+            $prices[] = ['date' => $date, 'price' => $price];
+            if ( $price > 0 ) { $min_p = min($min_p,$price); $max_p = max($max_p,$price); }
         }
-        return $result;
-    }
 
-    public function enqueue_scripts(): void {
-        if ( ! is_singular( 'tf_room' ) && ! is_singular( 'tf_hotel' ) ) return;
-        wp_localize_script( 'jquery', 'rba_price_config', [
-            'ajax_url' => admin_url( 'admin-ajax.php' ),
-            'nonce'    => wp_create_nonce( 'rba_public_nonce' ),
-        ] );
+        $range = $max_p > $min_p ? $max_p - $min_p : 0;
+        foreach ( $prices as &$p ) {
+            if ( $p['price'] <= 0 ) { $p['level'] = 'base'; continue; }
+            if ( $range < 1000 ) { $p['level'] = 'mid'; continue; }
+            $p['level'] = $p['price'] <= $min_p + $range * 0.33 ? 'low'
+                        : ( $p['price'] <= $min_p + $range * 0.66 ? 'mid' : 'high' );
+        }
+        unset($p);
+
+        // weekday của ngày 1 tháng đó (1=Mon theo ISO)
+        $ts      = mktime(0,0,0,$month,1,$year);
+        $weekday = (int) date('N', $ts); // 1=Mon, 7=Sun
+
+        wp_send_json_success([
+            'prices'   => $prices,
+            'year'     => $year,
+            'month'    => $month,
+            'label'    => date_i18n('F Y', $ts),
+            'days'     => $days,
+            'weekday'  => $weekday,
+            'currency' => function_exists('get_woocommerce_currency_symbol') ? get_woocommerce_currency_symbol() : '₫',
+            'base'     => self::get_base_price($room_id),
+        ]);
     }
 }
 

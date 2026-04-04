@@ -46,15 +46,28 @@ class RBA_Room_Unlock {
      * Ẩn notice "Room limit reached" bằng CSS.
      */
     public function hide_limit_notice_css(): void {
-        $screen = get_current_screen();
-        if ( ! $screen || ! in_array( $screen->post_type, [ 'tf_hotel', 'tf_room' ], true ) ) return;
+        if ( ! is_admin() ) return;
         ?>
         <style>
-        /* Hide Tourfic free room limit notices */
+        /* Hide Tourfic Free upgrade notices, pro upsells, room limits */
         .tf-room-limit-notice,
         .tf_room_limit_notice,
         [class*="room-limit"],
-        [id*="room_limit"] { display: none !important; }
+        [id*="room_limit"],
+        /* Pro upgrade banners */
+        .tf-pro-notice,
+        .tf-upgrade-notice,
+        .tf-pro-badge,
+        [class*="upgrade-notice"],
+        [class*="pro-notice"],
+        [class*="tf-free-limit"],
+        /* Tourfic admin notices về giới hạn */
+        .notice.tf-notice[class*="limit"],
+        div[id*="tf_limit"],
+        div[id*="tf-limit"],
+        /* Ẩn nút Pro trong các metabox */
+        .tf-pro-only-badge,
+        .tf-requires-pro { display: none !important; }
         </style>
         <?php
     }

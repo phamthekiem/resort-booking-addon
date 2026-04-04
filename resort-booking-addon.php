@@ -2,9 +2,9 @@
 /**
  * Plugin Name: Resort Booking Addon for Tourfic
  * Plugin URI:  https://github.com/
- * Description: Mở rộng Tourfic Free: 25 phòng, giá theo mùa, iCal OTA sync, chống double booking, tour nội khu, ACF integration, KiotViet Hotel bridge.
- * Version:     1.4.31
- * Author:      Your Name
+ * Description: Mở rộng Tourfic Free: Phòng, giá theo mùa, iCal OTA sync, chống double booking, tour nội khu, ACF integration, KiotViet Hotel bridge.
+ * Version:     1.7.6
+ * Author:      KiemPT
  * Update URI:   https://github.com/
  * Text Domain: rba
  * Requires at least: 6.0
@@ -14,7 +14,6 @@
 
 defined( 'ABSPATH' ) || exit;
 
-// ─── PHP version guard (phải kiểm tra trước khi dùng bất kỳ PHP 8+ syntax) ──
 if ( version_compare( PHP_VERSION, '8.0.0', '<' ) ) {
     add_action( 'admin_notices', function () {
         echo '<div class="notice notice-error"><p><strong>Resort Booking Addon</strong> yêu cầu PHP 8.0 trở lên. Phiên bản hiện tại: ' . PHP_VERSION . '</p></div>';
@@ -22,12 +21,11 @@ if ( version_compare( PHP_VERSION, '8.0.0', '<' ) ) {
     return;
 }
 
-define( 'RBA_VERSION', '1.4.31' );
+define( 'RBA_VERSION', '1.7.6' );
 define( 'RBA_PATH',    plugin_dir_path( __FILE__ ) );
 define( 'RBA_URL',     plugin_dir_url( __FILE__ ) );
 define( 'RBA_DB_VER',  '1.1' );
 
-// ─── Cron interval phải đăng ký SỚM (trước wp_schedule_event) ───────────────
 add_filter( 'cron_schedules', function ( array $schedules ): array {
     if ( ! isset( $schedules['rba_15min'] ) ) {
         $schedules['rba_15min'] = [
@@ -44,10 +42,8 @@ add_filter( 'cron_schedules', function ( array $schedules ): array {
     return $schedules;
 } );
 
-// ─── Autoload modules ────────────────────────────────────────────────────────
 add_action( 'plugins_loaded', function (): void {
 
-    // 1. Kiểm tra Tourfic đang active
     if ( ! defined( 'TF_VERSION' ) ) {
         add_action( 'admin_notices', function () {
             echo '<div class="notice notice-error"><p><strong>Resort Booking Addon</strong> yêu cầu plugin <strong>Tourfic</strong> đang hoạt động.</p></div>';
@@ -55,8 +51,6 @@ add_action( 'plugins_loaded', function (): void {
         return;
     }
 
-    // 2. Load các module — ĐỨng đúng thứ tự dependency:
-    //    Database → Room → Price → Guard → iCal → GCal → Tour → ACF → KiotViet → Search → Admin
     $modules = [
         'includes/class-rba-database.php',       // Phải load đầu tiên — DB helpers
         'includes/class-rba-room-unlock.php',     // Bypass giới hạn 5 phòng
@@ -72,6 +66,12 @@ add_action( 'plugins_loaded', function (): void {
         'includes/class-rba-kiotviet.php',        // KiotViet Hotel bridge
         'includes/class-rba-ota-api.php',          // OTA API full flow (Adapter Pattern)
         'admin/class-rba-admin.php',              // Admin dashboard
+        'includes/class-rba-room-data.php',        // Room data helper (safe, typed)
+        'includes/class-rba-room-template.php',   // AJAX handlers cho booking form
+        'includes/class-rba-price-display.php',   // Price display widget & AJAX
+        'includes/class-rba-pms-role.php',        // PMS role & nhân viên lễ tân
+        'includes/class-rba-pms.php',             // PMS dashboard (/pms/)
+        'includes/class-rba-debug.php',           // Debug tool
     ];
 
     foreach ( $modules as $file ) {
@@ -81,7 +81,6 @@ add_action( 'plugins_loaded', function (): void {
         }
     }
 
-    // ── Khởi tạo GitHub auto-updater ─────────────────────────────────────
     if ( is_admin() && class_exists( 'RBA_Updater' ) ) {
         new RBA_Updater(
             RBA_PATH . 'resort-booking-addon.php',
@@ -94,7 +93,6 @@ add_action( 'plugins_loaded', function (): void {
 
 }, 20 );
 
-// ─── Clear update logs AJAX ───────────────────────────────────────────────────
 add_action( 'wp_ajax_rba_clear_update_logs', function(): void {
     check_ajax_referer( 'rba_clear_update_logs', 'nonce' );
     if ( current_user_can( 'manage_options' ) ) {
@@ -103,24 +101,62 @@ add_action( 'wp_ajax_rba_clear_update_logs', function(): void {
     wp_send_json_success();
 } );
 
-// ─── Hook Google Calendar sync vào cron iCal có sẵn (dùng chung, không tạo cron riêng) ─
 add_action( 'rba_ical_sync_cron', function (): void {
     if ( class_exists( 'RBA_GCal' ) ) {
         ( new RBA_GCal() )->run_sync();
     }
 }, 20 );
 
-// ─── Activation hook ─────────────────────────────────────────────────────────
+
+add_action( 'wp_ajax_lux_refresh_summary',        'rba_lux_refresh_summary' );
+add_action( 'wp_ajax_nopriv_lux_refresh_summary', 'rba_lux_refresh_summary' );
+function rba_lux_refresh_summary(): void {
+    if ( ob_get_level() ) ob_clean();
+    check_ajax_referer( 'lux-summary', 'security' );
+
+    if ( ! function_exists('WC') || ! WC()->cart ) {
+        wp_send_json_error( 'Cart not available' );
+    }
+
+    $cart    = WC()->cart;
+    $items   = [];
+    foreach ( $cart->get_cart() as $item ) {
+        $room_id   = absint( $item['tf_room_id'] ?? $item['room_id'] ?? 0 );
+        $check_in  = (string) ( $item['tf_check_in']  ?? $item['check_in']  ?? '' );
+        $check_out = (string) ( $item['tf_check_out'] ?? $item['check_out'] ?? '' );
+        $nights    = 0;
+        if ( $check_in && $check_out ) {
+            $nights = max( 1, (int)( ( strtotime($check_out) - strtotime($check_in) ) / DAY_IN_SECONDS ) );
+        }
+        $items[] = [
+            'name'       => $item['data'] ? $item['data']->get_name() : '',
+            'room_id'    => $room_id,
+            'thumb'      => $room_id ? get_the_post_thumbnail_url( $room_id, 'thumbnail' ) : '',
+            'check_in'   => $check_in,
+            'check_out'  => $check_out,
+            'nights'     => $nights,
+            'adults'     => absint( $item['adults']   ?? 2 ),
+            'children'   => absint( $item['children'] ?? 0 ),
+            'line_total' => (float) ( $item['line_total'] ?? 0 ),
+        ];
+    }
+
+    wp_send_json_success( [
+        'items'    => $items,
+        'subtotal' => $cart->get_subtotal(),
+        'discount' => $cart->get_discount_total(),
+        'tax'      => $cart->get_total_tax(),
+        'total'    => $cart->get_total( 'edit' ),
+    ] );
+}
+
 register_activation_hook( __FILE__, function (): void {
-    // Load Database class trực tiếp (plugins_loaded chưa chạy tại thời điểm này)
     if ( ! class_exists( 'RBA_Database' ) ) {
         require_once RBA_PATH . 'includes/class-rba-database.php';
     }
 
     RBA_Database::create_tables();
 
-    // Schedule cron — interval 'rba_15min' đã được đăng ký qua cron_schedules filter ở trên
-    // (filter đó hook vào global scope, chạy trước activation hook)
     if ( ! wp_next_scheduled( 'rba_ical_sync_cron' ) ) {
         wp_schedule_event( time(), 'rba_15min', 'rba_ical_sync_cron' );
     }
@@ -128,7 +164,6 @@ register_activation_hook( __FILE__, function (): void {
         wp_schedule_event( time() + 60, 'rba_30min', 'rba_kv_sync_cron' );
     }
 
-    // Đăng ký rewrite rules trước khi flush
     add_rewrite_rule( '^rba-ota-reservation/([a-z]+)/?$', 'index.php?rba_ota_res=1&rba_ota_name=\$matches[1]', 'top' );
     add_rewrite_rule(
         '^rba-ical/([0-9]+)/([a-f0-9]+)/?$',
@@ -138,18 +173,15 @@ register_activation_hook( __FILE__, function (): void {
     flush_rewrite_rules();
 } );
 
-// ─── Deactivation hook ───────────────────────────────────────────────────────
 register_deactivation_hook( __FILE__, function (): void {
     wp_clear_scheduled_hook( 'rba_ical_sync_cron' );
     wp_clear_scheduled_hook( 'rba_kv_sync_cron' );
     flush_rewrite_rules();
 } );
 
-// ─── Uninstall: xóa tables và options ────────────────────────────────────────
 register_uninstall_hook( __FILE__, 'rba_uninstall' );
 
 function rba_uninstall(): void {
-    // Chỉ xóa nếu admin chọn "Delete plugin data"
     if ( ! get_option( 'rba_delete_data_on_uninstall' ) ) {
         return;
     }

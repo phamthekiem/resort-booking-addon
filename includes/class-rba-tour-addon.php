@@ -208,6 +208,29 @@ class RBA_Tour_Addon {
              WHERE order_id IS NULL AND session_id = %s AND status = 'pending'",
             $order_id, ( function_exists('WC') && WC()->session ) ? 'wc_' . WC()->session->get_customer_id() : ''
         ) );
+
+        // Push tour event lên Google Calendar
+        if ( class_exists( 'RBA_GCal' ) ) {
+            $order = wc_get_order( $order_id );
+            if ( $order ) {
+                $gcal = new RBA_GCal();
+                foreach ( $order->get_items() as $item ) {
+                    /** @var \WC_Order_Item_Product $item */
+                    $tour_id = absint( $item->get_meta( 'tf_tour_id' ) ?: $item->get_meta( 'tour_id' ) );
+                    $date    = (string) $item->get_meta( 'tour_date' );
+                    $slot    = (string) $item->get_meta( 'tour_slot' );
+                    if ( ! $tour_id || ! $date ) continue;
+                    $gcal->push_tour_event(
+                        $tour_id,
+                        $date,
+                        $slot,
+                        (int) ( $item->get_meta( 'adults' )   ?: 1 ),
+                        (int) ( $item->get_meta( 'children' ) ?: 0 ),
+                        $order
+                    );
+                }
+            }
+        }
     }
 
     public function release_tour_slot( int $order_id ): void {
@@ -217,6 +240,24 @@ class RBA_Tour_Addon {
             [ 'status' => 'cancelled' ],
             [ 'order_id' => $order_id ]
         );
+
+        // Xóa tour event trên Google Calendar
+        if ( class_exists( 'RBA_GCal' ) ) {
+            $order = wc_get_order( $order_id );
+            if ( $order ) {
+                $gcal = new RBA_GCal();
+                foreach ( $order->get_items() as $item ) {
+                    /** @var \WC_Order_Item_Product $item */
+                    $tour_id = absint( $item->get_meta( 'tf_tour_id' ) ?: $item->get_meta( 'tour_id' ) );
+                    if ( ! $tour_id ) continue;
+                    $event_id = (string) $order->get_meta( "_rba_gcal_tour_{$tour_id}" );
+                    if ( ! $event_id ) continue;
+                    $gcal->delete_event( 0, $event_id );
+                    $order->delete_meta_data( "_rba_gcal_tour_{$tour_id}" );
+                    $order->save_meta_data();
+                }
+            }
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -224,22 +265,34 @@ class RBA_Tour_Addon {
     // ────────────────────────────────────────────────────────────────────────
 
     public function apply_bundle_discount( \WC_Cart $cart ): void {
-        $has_room = false;
-        $has_tour = false;
-        $tour_total = 0;
+        try {
+            $has_room   = false;
+            $has_tour   = false;
+            $tour_total = 0.0;
 
-        foreach ( $cart->get_cart() as $item ) {
-            if ( ! empty($item['tf_room_id']) || ! empty($item['room_id']) ) $has_room = true;
-            if ( ! empty($item['tf_tour_id']) || ! empty($item['tour_id']) ) {
-                $has_tour  = true;
-                $tour_total += $item['line_total'];
+            foreach ( $cart->get_cart() as $item ) {
+                if ( ! empty( $item['tf_room_id'] ) || ! empty( $item['room_id'] ) ) {
+                    $has_room = true;
+                }
+                if ( ! empty( $item['tf_tour_id'] ) || ! empty( $item['tour_id'] ) ) {
+                    $has_tour    = true;
+                    // line_total có thể chưa tính — dùng product price * quantity thay thế
+                    $product     = $item['data'] ?? null;
+                    $price       = $product ? (float) $product->get_price() : 0.0;
+                    $qty         = (int) ( $item['quantity'] ?? 1 );
+                    $tour_total += $price * $qty;
+                }
             }
-        }
 
-        // Nếu đặt cả phòng lẫn tour → giảm 10% giá tour
-        if ( $has_room && $has_tour && $tour_total > 0 ) {
-            $discount = $tour_total * 0.10;
-            $cart->add_fee( '🎉 Ưu đãi combo phòng + tour', -$discount );
+            if ( $has_room && $has_tour && $tour_total > 0 ) {
+                $discount = round( $tour_total * 0.10, 0 );
+                $cart->add_fee( 'Ưu đãi combo phòng + tour (-10%)', -$discount );
+            }
+        } catch ( \Throwable $e ) {
+            // Không crash checkout nếu có lỗi tính discount
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( '[RBA] apply_bundle_discount error: ' . $e->getMessage() );
+            }
         }
     }
 

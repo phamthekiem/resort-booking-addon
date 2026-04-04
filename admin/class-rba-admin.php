@@ -2,8 +2,6 @@
 /**
  * RBA_Admin
  *
- * Đăng ký menu riêng (top-level) thay vì submenu vào Tourfic
- * để tránh phụ thuộc vào slug Tourfic (thay đổi theo version).
  *
  * @package ResortBookingAddon
  * @since   1.0.2
@@ -12,15 +10,13 @@ defined( 'ABSPATH' ) || exit;
 
 class RBA_Admin {
 
-    /** Slug của top-level menu */
     const MENU_SLUG = 'rba-dashboard';
 
     public function __construct() {
-        add_action( 'admin_menu', [ $this, 'register_pages' ], 99 ); // Priority 99 = chạy SAU Tourfic (default 10)
+        add_action( 'admin_menu', [ $this, 'register_pages' ], 99 ); 
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin' ] );
         add_action( 'wp_dashboard_setup',    [ $this, 'add_dashboard_widget' ] );
 
-        // AJAX: lấy dữ liệu stats realtime cho dashboard
         add_action( 'wp_ajax_rba_dashboard_stats', [ $this, 'ajax_dashboard_stats' ] );
     }
 
@@ -29,18 +25,14 @@ class RBA_Admin {
     // ─────────────────────────────────────────────────────────────────────────
 
     public function register_pages(): void {
-        // Hook priority 99 ─ chạy SAU Tourfic (priority 10)
-        // nên $GLOBALS['menu'] đã có đủ khi hàm này chạy.
         $tf_slug = $this->get_tourfic_menu_slug();
 
         if ( $tf_slug ) {
-            // ── Attach vào đúng menu Tourfic ────────────────────────────────
             add_submenu_page( $tf_slug, 'Resort Dashboard',      'Resort Dashboard', 'manage_options', self::MENU_SLUG,           [ $this, 'render_dashboard' ] );
             add_submenu_page( $tf_slug, 'Availability',          'Availability',     'manage_options', 'rba-availability',        [ $this, 'render_availability' ] );
             add_submenu_page( $tf_slug, 'OTA Sync',              'OTA Sync',         'manage_options', 'rba-ota-sync',            [ $this, 'render_ota_sync_page' ] );
             add_submenu_page( $tf_slug, 'GitHub Update Settings','Update Settings',  'manage_options', 'rba-update-settings',     [ $this, 'render_update_settings_page' ] );
         } else {
-            // ── Fallback: top-level menu riêng ──────────────────────────────
             add_menu_page( 'Resort Booking', 'Resort Booking', 'manage_options', self::MENU_SLUG, [ $this, 'render_dashboard' ], 'dashicons-calendar-alt', 26 );
             add_submenu_page( self::MENU_SLUG, 'Resort Dashboard',      'Dashboard',      'manage_options', self::MENU_SLUG,       [ $this, 'render_dashboard' ] );
             add_submenu_page( self::MENU_SLUG, 'Availability',          'Availability',   'manage_options', 'rba-availability',   [ $this, 'render_availability' ] );
@@ -50,10 +42,7 @@ class RBA_Admin {
     }
 
     /**
-     * Detect slug menu cha Tourfic bằng cách đọc $GLOBALS['menu'] + $GLOBALS['submenu'].
-     *
-     * Từ source Tourfic: menu cha dùng $this->option_id làm slug, và submenu
-     * Dashboard dùng slug 'tf_dashboard'. Ta dùng điểm đặc trưng đó để match chắc chắn.
+     * 
      */
     private function get_tourfic_menu_slug(): string {
         global $menu, $submenu;
@@ -63,16 +52,14 @@ class RBA_Admin {
             if ( ! isset( $item[2] ) ) continue;
             $slug = $item[2];
 
-            // Cách chắc nhất: Tourfic luôn có submenu slug = 'tf_dashboard'
             if ( ! empty( $submenu[ $slug ] ) ) {
                 foreach ( $submenu[ $slug ] as $sub ) {
                     if ( isset( $sub[2] ) && 'tf_dashboard' === $sub[2] ) {
-                        return $slug; // Tìm thấy chính xác
+                        return $slug; 
                     }
                 }
             }
 
-            // Fallback: match slug hoặc title
             if ( preg_match( '/^(tourfic|tf[-_]admin|tf[-_]hotel|tf-admin)$/i', $slug ) ) {
                 return $slug;
             }
@@ -339,7 +326,6 @@ class RBA_Admin {
     private function render_ota_status_table( bool $full_page = false ): void {
         global $wpdb;
 
-        // Kiểm tra table tồn tại trước khi query
         $table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$wpdb->prefix}rba_ical_sources'" );
         if ( ! $table_exists ) {
             echo '<p><em>Chưa có OTA nào. Vào trang phòng để thêm iCal feed.</em></p>';
@@ -453,12 +439,8 @@ class RBA_Admin {
     // ─────────────────────────────────────────────────────────────────────────
 
     public function enqueue_admin( string $hook ): void {
-        // Hook name format: {parent_slug}_page_{child_slug}
-        // Khi nằm dưới Tourfic (option_id khác nhau) → prefix khác nhau.
-        // Dùng str_ends_with để match bất kể parent prefix là gì.
         $rba_pages = [ 'rba-dashboard', 'rba-availability', 'rba-ota-sync' ];
         foreach ( $rba_pages as $page_slug ) {
-            // toplevel_page_{slug} hoặc {parent}_page_{slug}
             if ( str_ends_with( $hook, '_page_' . $page_slug ) || $hook === 'toplevel_page_' . $page_slug ) {
                 wp_enqueue_style( 'rba-admin', RBA_URL . 'assets/css/admin.css', [], RBA_VERSION );
                 return;
@@ -466,8 +448,6 @@ class RBA_Admin {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // AJAX: Dashboard stats (dùng cho auto-refresh nếu cần)
     // ─────────────────────────────────────────────────────────────────────────
 
     public function ajax_dashboard_stats(): void {
@@ -492,7 +472,6 @@ class RBA_Admin {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // INLINE STYLES (dùng khi admin.css chưa load hoặc bị cache)
     // ─────────────────────────────────────────────────────────────────────────
 
     private function render_inline_styles(): void {
@@ -626,9 +605,35 @@ class RBA_Admin {
             <div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:24px;margin-top:0">
 
                 <!-- STATUS -->
+                <div style="background:#f0f6fc;border:1px solid #0969da;border-radius:6px;padding:12px 16px;margin-bottom:20px;font-size:13px;display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+                    <span><strong>Phiên bản:</strong> <?php echo esc_html( RBA_VERSION ); ?></span>
+                    <span><strong>Mode:</strong> <code><?php echo esc_html( $mode ); ?></code></span>
+                    <span><strong>Cache:</strong> <?php echo esc_html( $debug['cache'] ?? '?' ); ?></span>
+                    <?php if ( $github_user && $github_repo ) : ?>
+                    <span><a href="https://github.com/<?php echo esc_attr("$github_user/$github_repo"); ?>" target="_blank">
+                        📦 <?php echo esc_html( "$github_user/$github_repo" ); ?>
+                    </a></span>
+                    <?php else : ?>
+                    <span style="color:#e65100">⚠ Chưa điền GitHub User</span>
+                    <?php endif; ?>
+                </div>
 
                 <!-- MODE SELECTOR -->
-                
+                <h3 style="margin:0 0 12px">Chọn phương thức kiểm tra update</h3>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
+                    <?php foreach ( $modes as $m_key => $m_info ) : ?>
+                    <label style="border:2px solid <?php echo $mode === $m_key ? esc_attr($m_info['color']) : '#e0e0e0'; ?>;border-radius:8px;padding:14px;cursor:pointer;display:block">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                            <input type="radio" name="rba_mode_radio" value="<?php echo esc_attr($m_key); ?>" <?php checked($mode,$m_key); ?>>
+                            <strong style="color:<?php echo esc_attr($m_info['color']); ?>"><?php echo esc_html($m_info['label']); ?></strong>
+                        </div>
+                        <div style="font-size:11px;background:<?php echo esc_attr($m_info['color']); ?>;color:#fff;padding:1px 6px;border-radius:4px;display:inline-block;margin-bottom:6px">
+                            <?php echo esc_html($m_info['badge']); ?>
+                        </div>
+                        <p style="margin:0;font-size:12px;color:#555;line-height:1.5"><?php echo esc_html($m_info['desc']); ?></p>
+                    </label>
+                    <?php endforeach; ?>
+                </div>
 
                 <!-- FORM -->
                 <table class="form-table" style="margin:0">
@@ -692,7 +697,37 @@ class RBA_Admin {
                 <?php endif; ?>
 
                 <!-- HƯỚNG DẪN -->
-                
+                <hr style="margin:20px 0">
+                <h3 style="margin:0 0 12px">Workflow theo từng mode</h3>
+                <table class="wp-list-table widefat" style="font-size:13px">
+                    <thead><tr><th>Mode</th><th>Để update WordPress, bạn cần làm</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td><strong style="color:#2e7d32">Raw File</strong></td>
+                            <td>
+                                1. Tăng <code>Version:</code> trong <code>resort-booking-addon.php</code><br>
+                                2. <code>git add . && git commit -m "v1.4.4" && git push</code><br>
+                                3. WordPress tự nhận update trong lần check tiếp theo
+                            </td>
+                        </tr>
+                        <tr style="background:#f9f9f9">
+                            <td><strong style="color:#1565c0">Tags</strong></td>
+                            <td>
+                                1. Tăng <code>Version:</code> trong file PHP<br>
+                                2. <code>git add . && git commit -m "v1.4.4" && git push</code><br>
+                                3. <code>git tag v1.4.4 && git push origin v1.4.4</code>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong style="color:#6a1b9a">Releases</strong></td>
+                            <td>
+                                1. Push code và tag<br>
+                                2. Vào GitHub → Releases → Tạo Release từ tag → Publish<br>
+                                (GitHub Actions tự động nếu đã setup workflow)
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 

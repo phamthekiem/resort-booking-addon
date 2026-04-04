@@ -52,11 +52,18 @@ class RBA_GCal {
         add_action( 'admin_menu',            [ $this, 'register_settings_page' ], 99 );
         add_action( 'admin_init',            [ $this, 'register_settings' ] );
 
+        // ── Push booking events lên Google Calendar (Mode B - API) ────────────
+        // Dùng priority 30 để chạy sau KiotViet (priority 10) và OTA API (priority 20)
+        add_action( 'rba_booking_confirmed',  [ $this, 'push_room_booking_event'  ], 30, 2 );
+        add_action( 'rba_booking_released',   [ $this, 'delete_room_booking_event'], 30, 2 );
+        add_action( 'rba_kv_booking_created', [ $this, 'push_kv_booking_event'    ], 30, 6 );
+
         // ── AJAX ──────────────────────────────────────────────────────────────
         add_action( 'wp_ajax_rba_gcal_test',         [ $this, 'ajax_test_connection' ] );
         add_action( 'wp_ajax_rba_gcal_list_cals',    [ $this, 'ajax_list_calendars' ] );
         add_action( 'wp_ajax_rba_gcal_sync_now',     [ $this, 'ajax_sync_now' ] );
         add_action( 'wp_ajax_rba_gcal_save_mapping', [ $this, 'ajax_save_mapping' ] );
+        add_action( 'wp_ajax_rba_gcal_test_push',    [ $this, 'ajax_test_push' ] );
     }
 
     // =========================================================================
@@ -643,6 +650,39 @@ class RBA_GCal {
                     </p>
                 <?php endif; ?>
 
+                <!-- PUSH BOOKING EVENTS INFO -->
+                <?php $method = get_option( self::OPT_METHOD, 'ical' ); ?>
+                <hr>
+                <div style="background:<?php echo $method === 'api' ? '#e8f5e9' : '#fff3e0'; ?>;border:1px solid <?php echo $method === 'api' ? '#a5d6a7' : '#ffb74d'; ?>;border-radius:6px;padding:14px;margin-top:4px">
+                    <strong style="font-size:13px">
+                        <?php echo $method === 'api' ? '✅ Push Booking → Google Calendar: Đang hoạt động' : '⚠️ Push Booking → Google Calendar: Cần Mode B (API)'; ?>
+                    </strong>
+                    <p style="font-size:12px;color:#555;margin:6px 0 0">
+                        <?php if ( $method === 'api' ) : ?>
+                            Mỗi khi khách đặt phòng/tour, event sẽ tự động tạo trên Google Calendar.
+                            Khi hủy booking, event sẽ tự động xóa.
+                        <?php else : ?>
+                            Tính năng push booking chỉ hoạt động ở <strong>Mode B — Google Calendar API</strong>.
+                            Chuyển mode và upload Service Account JSON để bật.
+                        <?php endif; ?>
+                    </p>
+                    <?php if ( $method === 'api' ) : ?>
+                    <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                        <select id="rba-gcal-test-room" style="flex:1;max-width:260px">
+                            <option value="0">-- Chọn phòng để test --</option>
+                            <?php foreach ( $rooms as $room ) : ?>
+                            <option value="<?php echo esc_attr($room->ID); ?>"><?php echo esc_html($room->post_title); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <button type="button" class="button button-primary" id="rba-gcal-test-push"
+                                data-nonce="<?php echo esc_attr( wp_create_nonce('rba_gcal_test') ); ?>">
+                            🧪 Test Push Event
+                        </button>
+                        <span id="rba-gcal-push-msg" style="font-size:13px"></span>
+                    </div>
+                    <?php endif; ?>
+                </div>
+
             <?php elseif ( 'mapping' === $active_tab ) : ?>
                 <h3 style="margin-top:0">Map Phòng ↔ Google Calendar</h3>
                 <p style="color:#555;font-size:13px">
@@ -798,6 +838,27 @@ class RBA_GCal {
                 });
             });
 
+            // Test push event
+            $('#rba-gcal-test-push').on('click', function(){
+                const $b   = $(this).prop('disabled', true).text('⏳ Đang tạo...');
+                const $msg = $('#rba-gcal-push-msg');
+                const room_id = $('#rba-gcal-test-room').val() || 0;
+                $msg.text('');
+                $.post(ajaxurl, {
+                    action:  'rba_gcal_test_push',
+                    nonce:   $(this).data('nonce'),
+                    room_id: room_id,
+                }, function(r){
+                    $b.prop('disabled', false).text('🧪 Test Push Event');
+                    if(r.success){
+                        $msg.html('<span style="color:#2e7d32">' + r.data.message +
+                            ' — <a href="' + r.data.view_url + '" target="_blank">Mở Google Calendar</a></span>');
+                    } else {
+                        $msg.html('<span style="color:#c62828">✘ ' + r.data + '</span>');
+                    }
+                });
+            });
+
             // Add mapping row
             let rowIdx = <?php echo max( count( $calendars ), 0 ); ?>;
             const rooms = <?php echo wp_json_encode( array_map( fn($r) => ['id' => $r->ID, 'title' => $r->post_title], $rooms ) ); ?>;
@@ -924,6 +985,375 @@ class RBA_GCal {
 
         $this->save_calendars( array_values( $calendars ) );
         wp_send_json_success( 'Saved' );
+    }
+
+    // =========================================================================
+    // PUSH BOOKING → GOOGLE CALENDAR  (chỉ hoạt động ở Mode B - API)
+    // =========================================================================
+
+    /**
+     * Hook: rba_booking_confirmed
+     * Website booking confirmed → tạo all-day event trên GCal.
+     */
+    public function push_room_booking_event( int $order_id, \WC_Order $order ): void {
+        if ( ! $this->is_enabled() || get_option( self::OPT_METHOD, 'ical' ) !== 'api' ) return;
+
+        foreach ( $order->get_items() as $item ) {
+            /** @var \WC_Order_Item_Product $item */
+            $room_id   = absint( $item->get_meta( 'tf_room_id' ) ?: $item->get_meta( 'room_id' ) );
+            $check_in  = (string) ( $item->get_meta( 'tf_check_in' )  ?: $item->get_meta( 'check_in' ) );
+            $check_out = (string) ( $item->get_meta( 'tf_check_out' ) ?: $item->get_meta( 'check_out' ) );
+            if ( ! $room_id || ! $check_in || ! $check_out ) continue;
+
+            $guest = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
+            $phone = $order->get_billing_phone();
+            $email = $order->get_billing_email();
+            $total = number_format( (float) $order->get_total(), 0, ',', '.' );
+            $room  = get_the_title( $room_id );
+            $nights = (int) ( ( strtotime( $check_out ) - strtotime( $check_in ) ) / DAY_IN_SECONDS );
+
+            $event_id = $this->create_event( $room_id, [
+                'summary'     => "🏨 {$room} — {$guest}",
+                'description' => implode( "\n", array_filter( [
+                    "Khách: {$guest}",
+                    $phone ? "SĐT: {$phone}"   : '',
+                    $email ? "Email: {$email}" : '',
+                    "Phòng: {$room}",
+                    "Check-in: " . date_i18n( 'd/m/Y', strtotime( $check_in ) ),
+                    "Check-out: " . date_i18n( 'd/m/Y', strtotime( $check_out ) ),
+                    "Số đêm: {$nights}",
+                    "Tổng: {$total} ₫",
+                    "Order #: {$order_id}",
+                    "Nguồn: Website trực tiếp",
+                ] ) ),
+                'start'    => $check_in,
+                'end'      => $check_out,
+                'colorId'  => '2',  // Sage/xanh lá = booking mới
+            ] );
+
+            if ( $event_id ) {
+                $order->update_meta_data( "_rba_gcal_event_{$room_id}", $event_id );
+                $order->save_meta_data();
+                $this->log( "push_room_booking: event [{$event_id}] → order #{$order_id} room #{$room_id}" );
+            }
+        }
+    }
+
+    /**
+     * Hook: rba_booking_released
+     * Booking bị hủy → xóa event trên GCal.
+     */
+    public function delete_room_booking_event( int $order_id, \WC_Order $order ): void {
+        if ( ! $this->is_enabled() || get_option( self::OPT_METHOD, 'ical' ) !== 'api' ) return;
+
+        foreach ( $order->get_items() as $item ) {
+            /** @var \WC_Order_Item_Product $item */
+            $room_id  = absint( $item->get_meta( 'tf_room_id' ) ?: $item->get_meta( 'room_id' ) );
+            if ( ! $room_id ) continue;
+
+            $event_id = (string) $order->get_meta( "_rba_gcal_event_{$room_id}" );
+            if ( ! $event_id ) continue;
+
+            $deleted = $this->delete_event( $room_id, $event_id );
+            if ( $deleted ) {
+                $order->delete_meta_data( "_rba_gcal_event_{$room_id}" );
+                $order->save_meta_data();
+                $this->log( "delete_room_booking: event [{$event_id}] deleted ← order #{$order_id}" );
+            }
+        }
+    }
+
+    /**
+     * Hook: rba_kv_booking_created
+     * KiotViet webhook (booking từ OTA: Booking.com, Agoda...) → push lên GCal.
+     *
+     * @param int    $kv_id   KiotViet booking ID
+     * @param int    $room_id WP room post ID
+     * @param string $date_in  Y-m-d
+     * @param string $date_out Y-m-d
+     * @param string $channel  Tên kênh: 'Booking.com', 'Agoda', 'walk-in'...
+     * @param array  $booking  Raw booking data từ KiotViet
+     */
+    public function push_kv_booking_event( int $kv_id, int $room_id, string $date_in,
+                                           string $date_out, string $channel, array $booking ): void {
+        if ( ! $this->is_enabled() || get_option( self::OPT_METHOD, 'ical' ) !== 'api' ) return;
+
+        // Tránh push trùng
+        if ( get_option( "rba_gcal_kv_{$kv_id}" ) ) return;
+
+        $icon = match ( strtolower( trim( $channel ) ) ) {
+            'booking.com' => '🌐',
+            'agoda'       => '🟡',
+            'airbnb'      => '🔴',
+            'traveloka'   => '🔵',
+            'expedia'     => '🟣',
+            'walk-in', 'walkin', 'kiotviet' => '🚶',
+            default       => '📱',
+        };
+
+        $guest = (string) ( $booking['customerName'] ?? $booking['customer_name'] ?? 'Khách OTA' );
+        $phone = (string) ( $booking['contactNumber'] ?? $booking['phone'] ?? '' );
+        $total = number_format( (float) ( $booking['totalAmount'] ?? $booking['total'] ?? 0 ), 0, ',', '.' );
+        $room  = get_the_title( $room_id );
+        $nights = (int) ( ( strtotime( $date_out ) - strtotime( $date_in ) ) / DAY_IN_SECONDS );
+
+        $event_id = $this->create_event( $room_id, [
+            'summary'     => "{$icon} {$room} — {$guest} ({$channel})",
+            'description' => implode( "\n", array_filter( [
+                "Khách: {$guest}",
+                $phone ? "SĐT: {$phone}" : '',
+                "Phòng: {$room}",
+                "Check-in: " . date_i18n( 'd/m/Y', strtotime( $date_in ) ),
+                "Check-out: " . date_i18n( 'd/m/Y', strtotime( $date_out ) ),
+                "Số đêm: {$nights}",
+                $total !== '0' ? "Tổng: {$total} ₫" : '',
+                "KiotViet ID: #{$kv_id}",
+                "Nguồn: {$channel}",
+            ] ) ),
+            'start'    => $date_in,
+            'end'      => $date_out,
+            'colorId'  => '5',  // Banana/vàng = từ OTA
+        ] );
+
+        if ( $event_id ) {
+            update_option( "rba_gcal_kv_{$kv_id}", $event_id, false );
+            $this->log( "push_kv_booking: event [{$event_id}] ← KV#{$kv_id} [{$channel}] room #{$room_id}" );
+        }
+    }
+
+    /**
+     * Push tour booking lên GCal.
+     * Gọi từ class-rba-tour-addon.php sau khi confirm_tour_slot.
+     */
+    public function push_tour_event( int $tour_id, string $date, string $slot,
+                                     int $adults, int $children, \WC_Order $order ): void {
+        if ( ! $this->is_enabled() || get_option( self::OPT_METHOD, 'ical' ) !== 'api' ) return;
+
+        $tour  = get_the_title( $tour_id );
+        $guest = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
+        $phone = $order->get_billing_phone();
+        $pax   = $adults . ' người lớn' . ( $children ? ", {$children} trẻ em" : '' );
+
+        // Tour mapping: dùng room_id = 0 → fallback calendar đầu tiên
+        $event_id = $this->create_event( 0, [
+            'summary'     => "🗺️ {$tour} — {$guest}",
+            'description' => implode( "\n", array_filter( [
+                "Khách: {$guest}",
+                $phone ? "SĐT: {$phone}" : '',
+                "Tour: {$tour}",
+                "Ngày: " . date_i18n( 'd/m/Y', strtotime( $date ) ) . ( $slot ? " lúc {$slot}" : '' ),
+                "Khách: {$pax}",
+                "Order #: {$order->get_id()}",
+            ] ) ),
+            'start'    => $date,
+            'end'      => $date,  // All-day 1 ngày
+            'colorId'  => '7',   // Peacock/xanh dương = tour
+        ] );
+
+        if ( $event_id ) {
+            $order->update_meta_data( "_rba_gcal_tour_{$tour_id}", $event_id );
+            $order->save_meta_data();
+            $this->log( "push_tour_event: event [{$event_id}] ← tour #{$tour_id} order #{$order->get_id()}" );
+        }
+    }
+
+    // =========================================================================
+    // GOOGLE CALENDAR API — CREATE / DELETE EVENT
+    // =========================================================================
+
+    /**
+     * Tạo all-day event trên Google Calendar.
+     *
+     * GCal color IDs:
+     *  1=Lavender 2=Sage 3=Grape 4=Flamingo 5=Banana 6=Tangerine 7=Peacock 8=Graphite 9=Blueberry 10=Basil 11=Tomato
+     *
+     * @param int   $room_id  WP room ID để tìm calendar_id. 0 = dùng calendar đầu tiên.
+     * @param array $event    { summary, description, start(Y-m-d), end(Y-m-d), colorId }
+     * @return string|null    GCal event ID hoặc null nếu lỗi
+     */
+    public function create_event( int $room_id, array $event ): ?string {
+        $token       = $this->get_service_account_token();
+        $calendar_id = $this->get_calendar_id_for_room( $room_id );
+
+        if ( ! $token || ! $calendar_id ) {
+            $this->log( 'create_event: ' . ( ! $token ? 'thiếu token' : "không có calendar map cho room #{$room_id}" ) );
+            return null;
+        }
+
+        // GCal all-day event: end date phải là ngày SAU ngày cuối cùng
+        // Ví dụ: check-out 05/07 → end = '2025-07-06'
+        $end_exclusive = gmdate( 'Y-m-d', strtotime( $event['end'] . ' +1 day' ) );
+
+        $body = [
+            'summary'     => $event['summary'],
+            'description' => $event['description'] ?? '',
+            'start'       => [ 'date' => $event['start'] ],
+            'end'         => [ 'date' => $end_exclusive ],
+            'colorId'     => (string) ( $event['colorId'] ?? '2' ),
+            'reminders'   => [ 'useDefault' => false, 'overrides' => [] ],
+        ];
+
+        $url = str_replace( '{calendarId}', rawurlencode( $calendar_id ), self::EVENTS_URL );
+
+        $response = wp_remote_post( $url, [
+            'timeout' => 15,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type'  => 'application/json',
+            ],
+            'body' => wp_json_encode( $body ),
+        ] );
+
+        if ( is_wp_error( $response ) ) {
+            $this->log( 'create_event wp_error: ' . $response->get_error_message() );
+            return null;
+        }
+
+        $code = wp_remote_retrieve_response_code( $response );
+        $data = json_decode( wp_remote_retrieve_body( $response ), true );
+
+        if ( $code !== 200 ) {
+            $msg = $data['error']['message'] ?? "HTTP {$code}";
+            $this->log( "create_event failed [{$code}]: {$msg}" );
+            if ( $code === 401 ) delete_transient( 'rba_gcal_sa_token' );
+            return null;
+        }
+
+        return $data['id'] ?? null;
+    }
+
+    /**
+     * Xóa event trên Google Calendar.
+     *
+     * @param int    $room_id   WP room ID để tìm calendar_id (0 = thử tất cả)
+     * @param string $event_id  GCal event ID
+     */
+    public function delete_event( int $room_id, string $event_id ): bool {
+        $token = $this->get_service_account_token();
+        if ( ! $token ) return false;
+
+        // Lấy danh sách calendar_ids cần thử
+        $calendar_ids = [];
+        if ( $room_id > 0 ) {
+            $cid = $this->get_calendar_id_for_room( $room_id );
+            if ( $cid ) $calendar_ids[] = $cid;
+        }
+        // Thêm tất cả calendars đã map (thử từng cái)
+        foreach ( $this->get_calendars() as $cal ) {
+            $cid = $cal['calendar_id'] ?? '';
+            if ( $cid && ! in_array( $cid, $calendar_ids, true ) ) $calendar_ids[] = $cid;
+        }
+
+        foreach ( $calendar_ids as $calendar_id ) {
+            $url = str_replace( '{calendarId}', rawurlencode( $calendar_id ), self::EVENTS_URL )
+                 . '/' . rawurlencode( $event_id );
+
+            $response = wp_remote_request( $url, [
+                'method'  => 'DELETE',
+                'timeout' => 10,
+                'headers' => [ 'Authorization' => 'Bearer ' . $token ],
+            ] );
+
+            $code = wp_remote_retrieve_response_code( $response );
+            if ( $code === 204 || $code === 200 ) {
+                $this->log( "delete_event [{$event_id}] OK from calendar [{$calendar_id}]" );
+                return true;
+            }
+            if ( $code === 410 ) {
+                // Gone — event đã bị xóa trước đó
+                $this->log( "delete_event [{$event_id}] already gone (410)" );
+                return true;
+            }
+        }
+
+        $this->log( "delete_event [{$event_id}] failed — không tìm thấy trong calendar nào" );
+        return false;
+    }
+
+    /**
+     * Lấy calendar_id cho phòng từ mapping đã cấu hình.
+     * Nếu room_id = 0 hoặc không tìm thấy → dùng calendar đầu tiên (fallback).
+     */
+    private function get_calendar_id_for_room( int $room_id ): string {
+        $calendars = $this->get_calendars();
+
+        // Tìm chính xác theo room_id
+        if ( $room_id > 0 ) {
+            foreach ( $calendars as $cal ) {
+                if ( (int) ( $cal['wp_room_id'] ?? 0 ) === $room_id
+                     && ! empty( $cal['calendar_id'] )
+                     && ( $cal['sync_method'] ?? 'api' ) === 'api' ) {
+                    return $cal['calendar_id'];
+                }
+            }
+        }
+
+        // Fallback: calendar đầu tiên có ID và sync_method = api
+        foreach ( $calendars as $cal ) {
+            if ( ! empty( $cal['calendar_id'] ) && ( $cal['sync_method'] ?? '' ) === 'api' ) {
+                return $cal['calendar_id'];
+            }
+        }
+
+        // Fallback cuối: calendar đầu tiên bất kỳ có ID
+        foreach ( $calendars as $cal ) {
+            if ( ! empty( $cal['calendar_id'] ) ) return $cal['calendar_id'];
+        }
+
+        return '';
+    }
+
+    // =========================================================================
+    // AJAX: TEST PUSH
+    // =========================================================================
+
+    /**
+     * AJAX: Test push event thủ công lên GCal.
+     * Dùng để kiểm tra kết nối trước khi có booking thật.
+     */
+    public function ajax_test_push(): void {
+        check_ajax_referer( 'rba_gcal_test', 'nonce' );
+        if ( ! current_user_can( 'manage_options' ) ) wp_send_json_error( 'Unauthorized' );
+
+        $room_id = absint( $_POST['room_id'] ?? 0 );
+        $today   = current_time( 'Y-m-d' );
+        $tomorrow = gmdate( 'Y-m-d', strtotime( '+1 day' ) );
+
+        // Tạo event test
+        $event_id = $this->create_event( $room_id, [
+            'summary'     => '🧪 [TEST] Booking thử nghiệm — Plugin RBA',
+            'description' => implode( "\n", [
+                'Đây là event test từ Resort Booking Addon.',
+                "Phòng ID: #{$room_id}",
+                "Ngày tạo: " . current_time( 'd/m/Y H:i:s' ),
+                'Bạn có thể xóa event này.',
+            ] ),
+            'start'    => $today,
+            'end'      => $tomorrow,
+            'colorId'  => '8',  // Graphite = test
+        ] );
+
+        if ( ! $event_id ) {
+            wp_send_json_error( 'Tạo event thất bại. Xem tab Logs để biết nguyên nhân.' );
+        }
+
+        // Xóa luôn event test sau 2s (cleanup)
+        // Không xóa ngay để user kịp thấy trên GCal
+        update_option( 'rba_gcal_test_event_cleanup', [
+            'event_id' => $event_id,
+            'room_id'  => $room_id,
+            'created'  => time(),
+        ], false );
+
+        $cal_id = $this->get_calendar_id_for_room( $room_id );
+        $cal_url = "https://calendar.google.com/calendar/r";
+
+        wp_send_json_success( [
+            'event_id'   => $event_id,
+            'calendar'   => $cal_id,
+            'message'    => "✅ Tạo event test thành công! Event ID: {$event_id}",
+            'view_url'   => $cal_url,
+        ] );
     }
 }
 
